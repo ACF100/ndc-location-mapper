@@ -222,7 +222,7 @@ class NDCToLocationMapper:
                 'longitude': None
             }
 
-            lines = address.replace('\n', ',').split(',')
+            lines = address.replace('\\n', ',').split(',')
             if len(lines) > 0:
                 parts['establishment_name'] = lines[0].strip()
 
@@ -246,7 +246,7 @@ class NDCToLocationMapper:
                 else:
                     parts['country'] = last_part
 
-            postal_match = re.search(r'\b(\d{5}(?:-\d{4})?|\d{4,6})\b', address)
+            postal_match = re.search(r'\\b(\\d{5}(?:-\\d{4})?|\\d{4,6})\\b', address)
             if postal_match:
                 parts['postal_code'] = postal_match.group(1)
 
@@ -404,7 +404,7 @@ class NDCToLocationMapper:
     def extract_labeler_from_product_name(self, product_name: str) -> str:
         """Extract labeler name from product name when it's in brackets"""
         try:
-            bracket_match = re.search(r'\[([^\]]+)\]\s*$', product_name)
+            bracket_match = re.search(r'\\[([^\\]]+)\\]\\s*$', product_name)
             if bracket_match:
                 return bracket_match.group(1).strip()
             
@@ -494,7 +494,7 @@ class NDCToLocationMapper:
             return None
 
     def find_fei_duns_matches_in_spl(self, spl_id: str) -> List[FEIMatch]:
-        """ENHANCED: Find FEI and DUNS numbers in SPL with better pattern matching"""
+        """Find FEI and DUNS numbers in SPL that match the spreadsheet database"""
         matches = []
         
         try:
@@ -506,46 +506,13 @@ class NDCToLocationMapper:
 
             content = response.text
             
-            # Multiple patterns to catch different XML structures
-            patterns = [
-                r'<id\s+([^>]*extension="(\d{7,15})"[^>]*)',  # Standard pattern
-                r'extension="(\d{7,15})"',  # Simple extension pattern
-                r'root="[^"]*"\s+extension="(\d{7,15})"',  # Root + extension
-                r'<id[^>]+extension="(\d{7,15})"[^>]*>',  # ID with extension
-            ]
+            # STRICT MATCHING: Only look for actual ID numbers in XML, not company names
+            id_pattern = r'<id\\s+([^>]*extension="(\\d{7,15})"[^>]*)'
+            id_matches = re.findall(id_pattern, content, re.IGNORECASE)
             
-            found_numbers = set()
-            
-            for pattern in patterns:
-                if 'extension="(\d{7,15})"' in pattern and pattern.count('(') == 1:
-                    # Simple pattern with one capture group
-                    id_matches = re.findall(pattern, content, re.IGNORECASE)
-                    for extension in id_matches:
-                        if isinstance(extension, str):
-                            found_numbers.add(extension)
-                else:
-                    # Complex pattern with multiple capture groups
-                    id_matches = re.findall(pattern, content, re.IGNORECASE)
-                    for match in id_matches:
-                        if isinstance(match, tuple):
-                            extension = match[-1]  # Last capture group should be the number
-                        else:
-                            extension = match
-                        found_numbers.add(extension)
-            
-            # Also look for FEI numbers in text content
-            fei_text_pattern = r'\bFEI[:\s#]*(\d{7,15})\b'
-            fei_text_matches = re.findall(fei_text_pattern, content, re.IGNORECASE)
-            found_numbers.update(fei_text_matches)
-            
-            # Process all found numbers
-            for extension in found_numbers:
-                if not extension or len(extension) < 7:
-                    continue
-                    
+            for full_match, extension in id_matches:
                 clean_extension = re.sub(r'[^\d]', '', extension)
                 
-                # Check FEI database first
                 fei_match_found = False
                 fei_variants = self._generate_all_id_variants(extension)
                 
@@ -563,7 +530,6 @@ class NDCToLocationMapper:
                         fei_match_found = True
                         break
                 
-                # Check DUNS database if no FEI match
                 if not fei_match_found:
                     duns_variants = self._generate_all_id_variants(extension)
                     
@@ -585,55 +551,8 @@ class NDCToLocationMapper:
             
         return matches
 
-    def fallback_establishment_search(self, content: str, target_ndc: str) -> List[Dict]:
-        """Fallback method to find establishments by company name matching"""
-        establishments_info = []
-        
-        try:
-            # Extract organization names from XML
-            org_patterns = [
-                r'<name[^>]*>([^<]+)</name>',
-                r'<organizationName[^>]*>([^<]+)</organizationName>',
-                r'<assignedEntity[^>]*>.*?<name[^>]*>([^<]+)</name>.*?</assignedEntity>',
-            ]
-            
-            found_names = set()
-            for pattern in org_patterns:
-                matches = re.findall(pattern, content, re.DOTALL | re.IGNORECASE)
-                for match in matches:
-                    clean_name = match.strip()
-                    if len(clean_name) > 3 and clean_name not in ['Unknown', 'N/A', 'None']:
-                        found_names.add(clean_name)
-            
-            # Try to match names against database
-            for name in found_names:
-                name_lower = name.lower()
-                
-                # Search in FEI database
-                for fei_key, establishment in self.fei_database.items():
-                    est_name = establishment.get('establishment_name', '').lower()
-                    firm_name = establishment.get('firm_name', '').lower()
-                    
-                    if (name_lower in est_name or est_name in name_lower or 
-                        name_lower in firm_name or firm_name in name_lower):
-                        
-                        establishment_copy = establishment.copy()
-                        establishment_copy['fei_number'] = fei_key
-                        establishment_copy['operations'] = ['Manufacturing (name match)']
-                        establishment_copy['quotes'] = [f'Establishment matched by name: {name}']
-                        establishment_copy['match_type'] = 'NAME_MATCH'
-                        establishment_copy['xml_location'] = 'SPL Document'
-                        
-                        establishments_info.append(establishment_copy)
-                        break  # Only take first match per name
-            
-            return establishments_info[:5]  # Limit to 5 matches
-            
-        except Exception as e:
-            return []
-
     def extract_establishments_with_fei(self, spl_id: str, target_ndc: str) -> Tuple[List[str], List[str], List[Dict]]:
-        """ENHANCED: Extract establishments with better fallback mechanisms"""
+        """Extract operations, quotes, and detailed establishment info with FEI/DUNS numbers for specific NDC"""
         try:
             spl_url = f"{self.dailymed_base_url}/services/v2/spls/{spl_id}.xml"
             response = self.session.get(spl_url)
@@ -645,79 +564,59 @@ class NDCToLocationMapper:
             establishments_info = []
             processed_numbers = set()
 
-            # Primary method: Find FEI/DUNS matches
+            # ONLY use strict FEI/DUNS matching - no fallback name matching!
             matches = self.find_fei_duns_matches_in_spl(spl_id)
+            establishment_sections = re.findall(r'<assignedEntity[^>]*>.*?</assignedEntity>', content, re.DOTALL | re.IGNORECASE)
             
-            if matches:
-                establishment_sections = re.findall(r'<assignedEntity[^>]*>.*?</assignedEntity>', content, re.DOTALL | re.IGNORECASE)
+            for match in matches:
+                if match.fei_number in processed_numbers:
+                    continue
                 
-                for match in matches:
-                    if match.fei_number in processed_numbers:
-                        continue
+                processed_numbers.add(match.fei_number)
+                
+                if match.match_type == 'FEI_NUMBER':
+                    establishment_info = self.lookup_fei_establishment(match.fei_number)
+                else:
+                    establishment_info = self.lookup_duns_establishment(match.fei_number)
+                
+                if establishment_info:
+                    establishment_operations = []
+                    establishment_quotes = []
+                    establishment_included = False
                     
-                    processed_numbers.add(match.fei_number)
-                    
-                    if match.match_type == 'FEI_NUMBER':
-                        establishment_info = self.lookup_fei_establishment(match.fei_number)
-                    else:
-                        establishment_info = self.lookup_duns_establishment(match.fei_number)
-                    
-                    if establishment_info:
-                        # Find operations for this establishment
-                        establishment_operations = []
-                        establishment_quotes = []
-                        establishment_included = False
-                        
-                        # Look in establishment sections
-                        for section in establishment_sections:
-                            if match.fei_number in section or any(variant in section for variant in self._generate_all_id_variants(match.fei_number)[:5]):
-                                name_match = re.search(r'<name[^>]*>([^<]+)</name>', section)
-                                section_establishment_name = name_match.group(1) if name_match else establishment_info.get('establishment_name', 'Unknown')
-                                
-                                ops, quotes = self.extract_ndc_specific_operations(section, target_ndc, section_establishment_name)
-                                
-                                if ops:
-                                    establishment_operations.extend(ops)
-                                    establishment_quotes.extend(quotes)
-                                    establishment_included = True
-                                else:
-                                    # Look for general operations
+                    for section in establishment_sections:
+                        if match.fei_number in section:
+                            name_match = re.search(r'<name[^>]*>([^<]+)</name>', section)
+                            section_establishment_name = name_match.group(1) if name_match else establishment_info.get('establishment_name', 'Unknown')
+                            
+                            ops, quotes = self.extract_ndc_specific_operations(section, target_ndc, section_establishment_name)
+                            
+                            if ops:
+                                establishment_operations.extend(ops)
+                                establishment_quotes.extend(quotes)
+                                establishment_included = True
+                            else:
+                                all_business_ops = re.findall(r'<businessOperation[^>]*>.*?</businessOperation>', section, re.DOTALL | re.IGNORECASE)
+                                if all_business_ops:
                                     general_ops, general_quotes = self.extract_general_operations(section, section_establishment_name)
                                     if general_ops:
                                         establishment_operations.extend(general_ops)
-                                        establishment_quotes.extend([f"General operation: {q}" for q in general_quotes])
+                                        establishment_quotes.extend([f"General operation (not NDC-specific): {q}" for q in general_quotes])
                                         establishment_included = True
-                                break
+                            break
+                    
+                    if establishment_included:
+                        establishment_info['xml_location'] = match.xml_location
+                        establishment_info['match_type'] = match.match_type
+                        establishment_info['xml_context'] = match.xml_context if hasattr(match, 'xml_context') else ''
                         
-                        # If no operations found in sections, look globally in document
-                        if not establishment_included:
-                            global_ops, global_quotes = self.extract_general_operations(content, establishment_info.get('establishment_name', 'Unknown'))
-                            if global_ops:
-                                establishment_operations.extend(global_ops)
-                                establishment_quotes.extend([f"Document-level operation: {q}" for q in global_quotes])
-                                establishment_included = True
-                            else:
-                                # Include establishment anyway with note
-                                establishment_operations = ['Manufacturing (inferred)']
-                                establishment_quotes = ['Establishment found in SPL but specific operations not detailed']
-                                establishment_included = True
+                        establishment_operations = list(dict.fromkeys(establishment_operations))
+                        establishment_quotes = list(dict.fromkeys(establishment_quotes))
                         
-                        if establishment_included:
-                            establishment_info['xml_location'] = match.xml_location
-                            establishment_info['match_type'] = match.match_type
-                            establishment_info['xml_context'] = match.xml_context if hasattr(match, 'xml_context') else ''
-                            
-                            establishment_operations = list(dict.fromkeys(establishment_operations))
-                            establishment_quotes = list(dict.fromkeys(establishment_quotes))
-                            
-                            establishment_info['operations'] = establishment_operations
-                            establishment_info['quotes'] = establishment_quotes
-                            
-                            establishments_info.append(establishment_info)
-            
-            # Fallback method: Look for company names in database
-            if not establishments_info:
-                establishments_info = self.fallback_establishment_search(content, target_ndc)
+                        establishment_info['operations'] = establishment_operations
+                        establishment_info['quotes'] = establishment_quotes
+                        
+                        establishments_info.append(establishment_info)
 
             return [], [], establishments_info
 
@@ -781,7 +680,7 @@ class NDCToLocationMapper:
                         operations.append(operation_found)
                         quotes.append(f'Found {operation_found} operation in {establishment_name}')
                 else:
-                    ndc_code_pattern = r'<code[^>]*code="([^"]*)"[^>]*codeSystem="2\.16\.840\.1\.113883\.6\.69"'
+                    ndc_code_pattern = r'<code[^>]*code="([^"]*)"[^>]*codeSystem="2\\.16\\.840\\.1\\.113883\\.6\\.69"'
                     ndc_matches = re.findall(ndc_code_pattern, element, re.IGNORECASE)
                     
                     ndc_found_in_operation = False
@@ -1144,13 +1043,12 @@ def main():
     🏭 **Matching FEI/DUNS numbers** to locations  
     🌍 **Showing global manufacturing** network  
     
-    **Enhanced Features:**
+    **Features:**
     - ✅ Automatic database loading
     - ✅ Improved NDC format matching
     - ✅ Handles all NDC formats (4-4-2, 5-3-2, 5-4-2)
     - ✅ Enhanced labeler extraction
-    - ✅ Real-time establishment analysis
-    - ✅ Fallback name matching
+    - ✅ STRICT establishment matching (FEI/DUNS only)
     """)
     
     if 'mapper' in st.session_state and st.session_state.mapper.database_loaded:
