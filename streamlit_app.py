@@ -325,10 +325,94 @@ class NDCToLocationMapper:
         else:
             return clean_ndc
 
+    def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
+        """Generate multiple NDC formats for matching - includes segment conversion"""
+        clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
+        variants = set()  # Use set to avoid duplicates
+        
+        # Remove dashes to get base digits
+        digits_only = clean_ndc.replace('-', '')
+        
+        # Add the original digits
+        variants.add(digits_only)
+        
+        # Add segment conversion variants for 10-digit ↔ 11-digit conversion
+        if '-' in clean_ndc:
+            parts = clean_ndc.split('-')
+            if len(parts) == 3:
+                labeler, product, package = parts
+                
+                # 5-4-2 → 5-3-2 (remove leading zero from product)
+                if len(labeler) == 5 and len(product) == 4 and len(package) == 2 and product.startswith('0'):
+                    product_unpadded = product[1:]  # Remove first character
+                    variants.add(f"{labeler}-{product_unpadded}-{package}")
+                    variants.add(f"{labeler}{product_unpadded}{package}")
+                    variants.add(f"{labeler}-{product_unpadded}")  # Base format
+                    variants.add(f"{labeler}{product_unpadded}")
+                
+                # 5-3-2 → 5-4-2 (add leading zero to product)
+                elif len(labeler) == 5 and len(product) == 3 and len(package) == 2:
+                    product_padded = '0' + product  # Add leading zero
+                    variants.add(f"{labeler}-{product_padded}-{package}")
+                    variants.add(f"{labeler}{product_padded}{package}")
+                    variants.add(f"{labeler}-{product_padded}")  # Base format
+                    variants.add(f"{labeler}{product_padded}")
+        
+        # Generate different length versions (original logic)
+        if len(digits_only) == 8:
+            variants.add('000' + digits_only)  # 11 digits
+            variants.add('00' + digits_only)   # 10 digits
+            variants.add('0' + digits_only)    # 9 digits
+        elif len(digits_only) == 9:
+            variants.add('00' + digits_only)   # 11 digits
+            variants.add('0' + digits_only)    # 10 digits
+            variants.add(digits_only[1:])      # 8 digits (remove leading zero)
+        elif len(digits_only) == 10:
+            variants.add('0' + digits_only)    # 11 digits
+            variants.add(digits_only[1:])      # 9 digits (remove leading zero)
+            variants.add(digits_only[2:])      # 8 digits (remove two leading zeros)
+        elif len(digits_only) == 11:
+            variants.add(digits_only[1:])      # 10 digits (remove leading zero)
+            variants.add(digits_only[2:])      # 9 digits (remove two leading zeros)
+            variants.add(digits_only[3:])      # 8 digits (remove three leading zeros)
+        
+        # Generate formatted versions for each variant
+        formatted_variants = set()
+        for variant in variants:
+            if len(variant) == 11:
+                formatted_variants.add(f"{variant[:5]}-{variant[5:9]}-{variant[9:]}")
+            elif len(variant) == 10:
+                formatted_variants.add(f"{variant[:5]}-{variant[5:8]}-{variant[8:]}")
+            elif len(variant) == 9:
+                formatted_variants.add(f"{variant[:4]}-{variant[4:7]}-{variant[7:]}")
+            elif len(variant) == 8:
+                formatted_variants.add(f"{variant[:4]}-{variant[4:6]}-{variant[6:]}")
+        
+        # Combine all variants
+        all_variants = variants.union(formatted_variants)
+        
+        # Add base NDC variants (labeler-product without package)
+        base_variants = set()
+        for variant in formatted_variants:
+            if '-' in variant:
+                parts = variant.split('-')
+                if len(parts) == 3:  # Standard NDC format
+                    base_ndc = f"{parts[0]}-{parts[1]}"  # Remove package part
+                    base_variants.add(base_ndc)
+                    
+                    # Also add base NDC without dashes
+                    base_ndc_no_dash = f"{parts[0]}{parts[1]}"
+                    base_variants.add(base_ndc_no_dash)
+        
+        all_variants = all_variants.union(base_variants)
+        
+        # Convert to list and remove empty strings
+        return [v for v in all_variants if v and len(v) >= 6]
+
     def get_ndc_info_from_dailymed(self, ndc: str) -> Optional[ProductInfo]:
         """Get NDC info from DailyMed"""
         try:
-            ndc_variants = [ndc, ndc.replace('-', ''), self.normalize_ndc(ndc)]
+            ndc_variants = self.normalize_ndc_for_matching(ndc)
             
             for ndc_variant in ndc_variants:
                 if not ndc_variant or len(ndc_variant) < 6:
@@ -394,6 +478,229 @@ class NDCToLocationMapper:
         except Exception as e:
             return None
 
+    def extract_ndc_specific_operations(self, section: str, target_ndc: str, establishment_name: str) -> Tuple[List[str], List[str]]:
+        """Extract operations that are specific to the target NDC from an establishment section"""
+        operations = []
+        quotes = []
+
+        # Generate all possible NDC variants for matching
+        ndc_variants = self.normalize_ndc_for_matching(target_ndc)
+
+        # Updated operation mappings
+        operation_codes = {
+            'C43360': 'Manufacture',
+            'C82401': 'Manufacture', 
+            'C25391': 'Analysis',
+            'C84731': 'Pack',
+            'C25392': 'Label',
+            'C48482': 'Repack',
+            'C73606': 'Relabel',
+            'C84732': 'Sterilize',
+            'C25394': 'API Manufacture',
+            'C43359': 'Manufacture'
+        }
+
+        # Look for performance elements with actDefinition (this is the correct structure for SPL)
+        performance_elements = re.findall(r'<performance[^>]*>.*?</performance>', section, re.DOTALL | re.IGNORECASE)
+
+        for perf_elem in performance_elements:
+            # Extract operation code and displayName from actDefinition
+            operation_found = None
+            operation_code_match = re.search(r'<code[^>]*code="([^"]*)"[^>]*displayName="([^"]*)"', perf_elem, re.IGNORECASE)
+            
+            if operation_code_match:
+                operation_code = operation_code_match.group(1)
+                
+                # Map operation code to our standard operation names
+                if operation_code in operation_codes:
+                    operation_found = operation_codes[operation_code]
+
+            if operation_found:
+                # Look for NDC codes in manufacturedMaterialKind
+                ndc_code_pattern = r'<code[^>]*code="([^"]*)"[^>]*codeSystem="2\.16\.840\.1\.113883\.6\.69"'
+                ndc_matches = re.findall(ndc_code_pattern, perf_elem, re.IGNORECASE)
+                
+                ndc_found_in_operation = False
+                for ndc_code in ndc_matches:
+                    # Clean up the NDC code
+                    clean_ndc = ndc_code.strip()
+                    
+                    # Generate variants for this NDC code
+                    potential_variants = self.normalize_ndc_for_matching(clean_ndc)
+
+                    # Check if any variant matches our target NDC
+                    matching_variants = [v for v in potential_variants if v in ndc_variants]
+                    if matching_variants:
+                        ndc_found_in_operation = True
+                        break
+
+                # If our target NDC was found in this operation, add it
+                if ndc_found_in_operation and operation_found not in operations:
+                    operations.append(operation_found)
+                    quotes.append(f'Found {operation_found} operation for NDC {target_ndc} in {establishment_name}')
+
+        # Remove "Manufacture" if "API Manufacture" is present
+        if 'API Manufacture' in operations and 'Manufacture' in operations:
+            operations.remove('Manufacture')
+            quotes = [q for q in quotes if 'Manufacture operation' not in q or 'API Manufacture operation' in q]
+
+        return operations, quotes
+
+    def extract_establishments_with_fei(self, spl_id: str, target_ndc: str) -> Tuple[List[str], List[str], List[Dict]]:
+        """Extract operations, quotes, and detailed establishment info with FEI/DUNS numbers for specific NDC"""
+        try:
+            spl_url = f"{self.dailymed_base_url}/services/v2/spls/{spl_id}.xml"
+            response = self.session.get(spl_url)
+
+            if response.status_code != 200:
+                return [], [], []
+
+            content = response.text
+            establishments_info = []
+            processed_numbers = set()  # Track processed FEI/DUNS numbers to avoid duplicates
+
+            # First, find FEI/DUNS matches with their XML locations
+            matches = self.find_fei_duns_matches_in_spl(spl_id)
+            
+            # Get establishment sections for operation extraction
+            establishment_sections = re.findall(r'<assignedEntity[^>]*>.*?</assignedEntity>', content, re.DOTALL | re.IGNORECASE)
+            
+            for match in matches:
+                # Skip if we've already processed this number
+                if match.fei_number in processed_numbers:
+                    continue
+                
+                processed_numbers.add(match.fei_number)
+                
+                # Look up establishment info based on match type
+                if match.match_type == 'FEI_NUMBER':
+                    establishment_info = self.lookup_fei_establishment(match.fei_number)
+                else:  # DUNS_NUMBER
+                    establishment_info = self.lookup_duns_establishment(match.fei_number)
+                
+                if establishment_info:
+                    # Find the establishment section that contains our matched number and extract operations
+                    establishment_operations = []
+                    establishment_quotes = []
+                    establishment_included = False
+                    
+                    # Look for this FEI/DUNS in establishment sections to get operations
+                    for section in establishment_sections:
+                        # Check if this section contains our matched number
+                        if match.fei_number in section:
+                            # Extract establishment name from section
+                            name_match = re.search(r'<name[^>]*>([^<]+)</name>', section)
+                            section_establishment_name = name_match.group(1) if name_match else establishment_info.get('establishment_name', 'Unknown')
+                            
+                            # Extract NDC-specific operations for this establishment
+                            ops, quotes = self.extract_ndc_specific_operations(section, target_ndc, section_establishment_name)
+                            
+                            if ops:
+                                establishment_operations.extend(ops)
+                                establishment_quotes.extend(quotes)
+                                establishment_included = True
+                            else:
+                                # Fallback: Check if establishment has any business operations at all
+                                all_business_ops = re.findall(r'<businessOperation[^>]*>.*?</businessOperation>', section, re.DOTALL | re.IGNORECASE)
+                                if all_business_ops:
+                                    # Extract general operations (not NDC-specific)
+                                    general_ops, general_quotes = self.extract_general_operations(section, section_establishment_name)
+                                    if general_ops:
+                                        establishment_operations.extend(general_ops)
+                                        establishment_quotes.extend([f"General operation (not NDC-specific): {q}" for q in general_quotes])
+                                        establishment_included = True
+                            
+                            # Only process the FIRST matching section to avoid duplicates
+                            break
+                    
+                    # Add establishment if we found operations (either NDC-specific or general)
+                    if establishment_included:
+                        # Add match location information
+                        establishment_info['xml_location'] = match.xml_location
+                        establishment_info['match_type'] = match.match_type
+                        establishment_info['xml_context'] = match.xml_context if hasattr(match, 'xml_context') else ''
+                        
+                        # Remove duplicates while preserving order
+                        establishment_operations = list(dict.fromkeys(establishment_operations))
+                        establishment_quotes = list(dict.fromkeys(establishment_quotes))
+                        
+                        establishment_info['operations'] = establishment_operations
+                        establishment_info['quotes'] = establishment_quotes
+                        
+                        establishments_info.append(establishment_info)
+
+            # Return empty lists for document-level operations since we now have establishment-specific ones
+            return [], [], establishments_info
+
+        except Exception as e:
+            return [], [], []
+
+    def extract_general_operations(self, section: str, establishment_name: str) -> Tuple[List[str], List[str]]:
+        """Extract general operations from an establishment section (not NDC-specific)"""
+        operations = []
+        quotes = []
+
+        # Updated operation mappings
+        operation_codes = {
+            'C43360': 'Manufacture',
+            'C82401': 'Manufacture', 
+            'C25391': 'Analysis',
+            'C84731': 'Pack',
+            'C25392': 'Label',
+            'C48482': 'Repack',
+            'C73606': 'Relabel',
+            'C84732': 'Sterilize',
+            'C25394': 'API Manufacture',
+            'C43359': 'Manufacture'
+        }
+
+        operation_names = {
+            'manufacture': 'Manufacture',
+            'api manufacture': 'API Manufacture',
+            'analysis': 'Analysis',
+            'label': 'Label',
+            'pack': 'Pack',
+            'repack': 'Repack',
+            'relabel': 'Relabel',
+            'sterilize': 'Sterilize'
+        }
+
+        # Look for business operations
+        business_operations = re.findall(r'<businessOperation[^>]*>.*?</businessOperation>', section, re.DOTALL | re.IGNORECASE)
+
+        for bus_op in business_operations:
+            operation_found = None
+
+            # Check for displayName attributes
+            display_name_match = re.search(r'displayName="([^"]*)"', bus_op, re.IGNORECASE)
+            if display_name_match:
+                display_name = display_name_match.group(1).lower()
+                if 'api' in display_name and 'manufacture' in display_name:
+                    operation_found = 'API Manufacture'
+                else:
+                    for name, operation in operation_names.items():
+                        if name in display_name and operation != 'API Manufacture':
+                            operation_found = operation
+                            break
+
+            # Check for operation codes
+            if not operation_found:
+                for code, operation in operation_codes.items():
+                    if code in bus_op:
+                        operation_found = operation
+                        break
+
+            if operation_found and operation_found not in operations:
+                operations.append(operation_found)
+                quotes.append(f'Found {operation_found} operation in {establishment_name}')
+
+        # Remove "Manufacture" if "API Manufacture" is present
+        if 'API Manufacture' in operations and 'Manufacture' in operations:
+            operations.remove('Manufacture')
+            quotes = [q for q in quotes if 'Manufacture operation' not in q or 'API Manufacture operation' in q]
+
+        return operations, quotes
+
     def find_fei_duns_matches_in_spl(self, spl_id: str) -> List[FEIMatch]:
         """Find FEI and DUNS numbers in SPL that match the spreadsheet database"""
         matches = []
@@ -455,7 +762,7 @@ class NDCToLocationMapper:
         return matches
 
     def process_single_ndc(self, ndc: str) -> pd.DataFrame:
-        """Process a single NDC number with full functionality"""
+        """Process a single NDC number with full functionality and deduplication"""
         if not self.validate_ndc_format(ndc):
             return pd.DataFrame()
 
@@ -465,45 +772,49 @@ class NDCToLocationMapper:
         if not product_info:
             return pd.DataFrame()
 
+        # Get establishments from SPL with NDC-specific operations
+        _, _, establishments_info = self.extract_establishments_with_fei(product_info.spl_id, ndc)
+
         results = []
-        
-        # Get establishments from SPL
-        if product_info.spl_id:
-            matches = self.find_fei_duns_matches_in_spl(product_info.spl_id)
-            
-            for match in matches:
-                if match.match_type == 'FEI_NUMBER':
-                    establishment_info = self.lookup_fei_establishment(match.fei_number)
-                else:
-                    establishment_info = self.lookup_duns_establishment(match.fei_number)
+        processed_ids = set()  # Track processed FEI/DUNS to avoid duplicates
+
+        if establishments_info:
+            for establishment in establishments_info:
+                # Create unique ID for deduplication
+                unique_id = establishment.get('fei_number') or establishment.get('duns_number')
                 
-                if establishment_info:
-                    results.append({
-                        'ndc': ndc,
-                        'product_name': product_info.product_name,
-                        'labeler_name': product_info.labeler_name,
-                        'spl_id': product_info.spl_id,
-                        'fei_number': establishment_info.get('fei_number') if match.match_type == 'FEI_NUMBER' else None,
-                        'duns_number': establishment_info.get('duns_number') if match.match_type == 'DUNS_NUMBER' else None,
-                        'establishment_name': establishment_info.get('establishment_name', 'Unknown'),
-                        'firm_name': establishment_info.get('firm_name', 'Unknown'),
-                        'address_line_1': establishment_info.get('address_line_1', 'Unknown'),
-                        'city': establishment_info.get('city', 'Unknown'),
-                        'state': establishment_info.get('state_province', 'Unknown'),
-                        'country': establishment_info.get('country', 'Unknown'),
-                        'postal_code': establishment_info.get('postal_code', ''),
-                        'latitude': establishment_info.get('latitude'),
-                        'longitude': establishment_info.get('longitude'),
-                        'spl_operations': 'Analysis, Manufacture',  # Simplified for now
-                        'spl_quotes': '',
-                        'search_method': establishment_info.get('search_method', 'database_lookup'),
-                        'xml_location': match.xml_location,
-                        'match_type': match.match_type,
-                        'xml_context': ''
-                    })
-        
-        # If no establishments found, return basic product info
-        if not results:
+                # Skip if we've already processed this establishment
+                if unique_id and unique_id in processed_ids:
+                    continue
+                
+                if unique_id:
+                    processed_ids.add(unique_id)
+
+                results.append({
+                    'ndc': ndc,
+                    'product_name': product_info.product_name,
+                    'labeler_name': product_info.labeler_name,
+                    'spl_id': product_info.spl_id,
+                    'fei_number': establishment.get('fei_number'),
+                    'duns_number': establishment.get('duns_number'),
+                    'establishment_name': establishment.get('establishment_name'),
+                    'firm_name': establishment.get('firm_name'),
+                    'address_line_1': establishment.get('address_line_1'),
+                    'city': establishment.get('city'),
+                    'state': establishment.get('state_province'),
+                    'country': establishment.get('country'),
+                    'postal_code': establishment.get('postal_code', ''),
+                    'latitude': establishment.get('latitude'),
+                    'longitude': establishment.get('longitude'),
+                    'spl_operations': ', '.join(establishment.get('operations', [])) if establishment.get('operations') else 'None found for this NDC',
+                    'spl_quotes': ' | '.join(establishment.get('quotes', [])),
+                    'search_method': establishment.get('search_method'),
+                    'xml_location': establishment.get('xml_location', 'Unknown'),
+                    'match_type': establishment.get('match_type', 'Unknown'),
+                    'xml_context': establishment.get('xml_context', '')
+                })
+        else:
+            # No establishments found
             results.append({
                 'ndc': ndc,
                 'product_name': product_info.product_name,
@@ -680,7 +991,7 @@ def main():
                                     with col2:
                                         if row['country'] and row['country'] != 'Unknown':
                                             st.write(f"**🌍 Country:** {row['country']}")
-                                        if row['spl_operations']:
+                                        if row['spl_operations'] and row['spl_operations'] != 'None found for this NDC':
                                             st.write(f"**⚙️ Operations:** {row['spl_operations']}")
                                     
                                     # Address
@@ -739,7 +1050,6 @@ def main():
         - FDA Structured Product Labels (SPL)
         - FDA Establishment Registration Database  
         - DailyMed Database
-        - OpenFDA API
         """)
         
         if 'mapper' in st.session_state:
