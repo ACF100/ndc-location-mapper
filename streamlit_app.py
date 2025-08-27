@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import tempfile
 import os
 import requests
 import json
@@ -11,6 +10,7 @@ from dataclasses import dataclass
 import logging
 import re
 import warnings
+from datetime import datetime
 
 # Configure logging to only show errors
 logging.basicConfig(level=logging.ERROR)
@@ -34,7 +34,7 @@ class FEIMatch:
     xml_context: str = None  # Surrounding XML context
 
 class NDCToLocationMapper:
-    def __init__(self, fei_spreadsheet_path: str = None):
+    def __init__(self):
         self.base_openfda_url = "https://api.fda.gov"
         self.dailymed_base_url = "https://dailymed.nlm.nih.gov/dailymed"
         self.session = requests.Session()
@@ -42,11 +42,66 @@ class NDCToLocationMapper:
             'User-Agent': 'FDA-Research-Tool/1.0 (research@fda.gov)'
         })
 
-        # Load FEI database from spreadsheet
+        # Initialize empty databases
         self.fei_database = {}
-        self.duns_database = {}  # Add DUNS database
-        if fei_spreadsheet_path:
-            self.load_fei_database_from_spreadsheet(fei_spreadsheet_path)
+        self.duns_database = {}
+        self.database_loaded = False
+        
+        # Auto-load database
+        self.load_database_automatically()
+
+    def load_database_automatically(self):
+        """Automatically load database from repository or GitHub"""
+        try:
+            # Try multiple possible locations for the database file
+            possible_files = [
+                "drls_reg.xlsx",  # Same directory as app
+                "data/drls_reg.xlsx",  # Data subdirectory
+                "./drls_reg.xlsx",  # Explicit current directory
+                "../drls_reg.xlsx"  # Parent directory
+            ]
+            
+            # Try local files first
+            for file_path in possible_files:
+                if os.path.exists(file_path):
+                    st.info(f"📂 Loading establishment database from repository...")
+                    self.load_fei_database_from_spreadsheet(file_path)
+                    if self.fei_database or self.duns_database:
+                        self.database_loaded = True
+                        return
+            
+            # If no local file found, try downloading from GitHub
+            # You'll need to replace 'yourusername' and 'your-repo-name' with your actual GitHub details
+            github_urls = [
+                "https://raw.githubusercontent.com/yourusername/ndc-location-mapper/main/drls_reg.xlsx",
+                "https://github.com/yourusername/ndc-location-mapper/raw/main/drls_reg.xlsx"
+            ]
+            
+            for github_url in github_urls:
+                try:
+                    st.info("🌐 Downloading establishment database from GitHub...")
+                    response = requests.get(github_url, timeout=30)
+                    if response.status_code == 200:
+                        temp_file = "temp_drls_reg.xlsx"
+                        with open(temp_file, "wb") as f:
+                            f.write(response.content)
+                        
+                        self.load_fei_database_from_spreadsheet(temp_file)
+                        os.remove(temp_file)  # Clean up
+                        
+                        if self.fei_database or self.duns_database:
+                            self.database_loaded = True
+                            return
+                            
+                except Exception as e:
+                    continue
+            
+            # If all else fails, show error
+            st.error("❌ Could not load establishment database from any source")
+            st.info("💡 Please ensure drls_reg.xlsx is available in the repository")
+            
+        except Exception as e:
+            st.error(f"❌ Error during database loading: {str(e)}")
 
     def load_fei_database_from_spreadsheet(self, file_path: str):
         """Load FEI and DUNS database from a spreadsheet"""
@@ -928,195 +983,202 @@ def main():
     
     st.title("💊 NDC Manufacturing Location Lookup")
     st.markdown("### Find where your medications are manufactured")
-    st.markdown("Upload your establishment database and enter an NDC number to discover manufacturing locations and operations.")
+    st.markdown("Enter an NDC number to discover manufacturing establishments, locations, and operations using FDA data.")
     
-    # File upload for database
-    uploaded_file = st.file_uploader(
-        "Upload DRLS Registry File", 
-        type=['xlsx'],
-        help="Upload the Excel file containing FEI and DUNS establishment data"
-    )
-    
-    if uploaded_file is not None:
-        # Initialize mapper with uploaded file
-        if 'mapper' not in st.session_state:
-            with st.spinner("Loading establishment database..."):
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
-                    tmp_file.write(uploaded_file.getvalue())
-                    st.session_state.mapper = NDCToLocationMapper(tmp_file.name)
-                    os.unlink(tmp_file.name)
+    # Auto-load database and show status
+    if 'mapper' not in st.session_state:
+        with st.spinner("🔄 Loading FDA establishment database..."):
+            st.session_state.mapper = NDCToLocationMapper()
             
-            if st.session_state.mapper.fei_database or st.session_state.mapper.duns_database:
-                st.success(f"✅ Database loaded: {len(st.session_state.mapper.fei_database):,} FEI entries, {len(st.session_state.mapper.duns_database):,} DUNS entries")
-            else:
-                st.error("❌ Could not load database from file")
-                return
-        
-        # NDC input
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            ndc_input = st.text_input(
-                "Enter NDC Number:", 
-                placeholder="50242-061-01",
-                help="NDC format: 12345-678-90 or 1234567890"
-            )
-        with col2:
-            search_btn = st.button("🔍 Search", type="primary")
-        
-        # Example NDCs
-        st.markdown("**Try these examples:**")
-        examples = ["50242-061-01", "63323-262-06", "0093-7663-56"]
-        cols = st.columns(len(examples))
-        for i, ex in enumerate(examples):
-            with cols[i]:
-                if st.button(f"`{ex}`", key=f"ex_{i}"):
-                    ndc_input = ex
-                    search_btn = True
-        
-        if search_btn and ndc_input:
-            with st.spinner(f"Looking up manufacturing locations for {ndc_input}..."):
-                try:
-                    results_df = st.session_state.mapper.process_single_ndc(ndc_input)
-                    
-                    if len(results_df) > 0:
-                        first_row = results_df.iloc[0]
-                        
-                        # Check if establishments were found
-                        if first_row['search_method'] == 'no_establishments_found':
-                            st.warning(f"⚠️ Found product information for NDC {ndc_input}, but no manufacturing establishments detected")
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric("Product Name", first_row['product_name'])
-                                st.metric("NDC Number", first_row['ndc'])
-                            with col2:
-                                labeler = first_row['labeler_name'] if first_row['labeler_name'] != 'Unknown' else 'Not specified'
-                                st.metric("Labeler", labeler)
-                                
-                                if first_row['spl_id']:
-                                    spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                                    st.markdown(f"📄 **SPL Document:** [View on DailyMed]({spl_url})")
-                            
-                            st.info("💡 This product may not have detailed establishment information in its SPL document, or the establishments may not be in your database.")
-                        
-                        else:
-                            # Full results with establishments
-                            st.success(f"✅ Found {len(results_df)} manufacturing establishments for NDC: {ndc_input}")
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric("Product Name", first_row['product_name'])
-                                st.metric("NDC Number", first_row['ndc'])
-                            
-                            with col2:
-                                labeler = first_row['labeler_name'] if first_row['labeler_name'] != 'Unknown' else 'Not specified'
-                                st.metric("Labeler", labeler)
-                                
-                                if first_row['spl_id']:
-                                    spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                                    st.markdown(f"📄 **SPL Document:** [View on DailyMed]({spl_url})")
-                            
-                            # Country distribution
-                            if len(results_df) > 1:
-                                country_counts = results_df['country'].value_counts()
-                                country_summary = ", ".join([f"{country}: {count}" for country, count in country_counts.items()])
-                                st.markdown(f"🌍 **Country Distribution:** {country_summary}")
-                            
-                            # Manufacturing establishments
-                            st.subheader(f"🏭 Manufacturing Establishments ({len(results_df)})")
-                            
-                            for idx, row in results_df.iterrows():
-                                with st.expander(f"Establishment {idx + 1}: {row['establishment_name']}", expanded=True):
-                                    col1, col2 = st.columns(2)
-                                    
-                                    with col1:
-                                        if row['fei_number']:
-                                            st.write(f"**🔢 FEI Number:** {row['fei_number']}")
-                                        if row['duns_number']:
-                                            st.write(f"**🔢 DUNS Number:** {row['duns_number']}")
-                                        if row['firm_name'] and row['firm_name'] != 'Unknown':
-                                            st.write(f"**🏢 Firm Name:** {row['firm_name']}")
-                                    
-                                    with col2:
-                                        if row['country'] and row['country'] != 'Unknown':
-                                            st.write(f"**🌍 Country:** {row['country']}")
-                                        if row['spl_operations'] and row['spl_operations'] != 'None found for this NDC':
-                                            st.write(f"**⚙️ Operations:** {row['spl_operations']}")
-                                    
-                                    # Address
-                                    if row['address_line_1'] and 'not available' not in str(row['address_line_1']).lower() and row['address_line_1'] != 'Unknown':
-                                        address_parts = []
-                                        if row['address_line_1'] != 'Unknown':
-                                            address_parts.append(row['address_line_1'])
-                                        if row['city'] != 'Unknown':
-                                            address_parts.append(row['city'])
-                                        if row['state'] != 'Unknown':
-                                            address_parts.append(row['state'])
-                                        if row['postal_code']:
-                                            address_parts.append(row['postal_code'])
-                                        if row['country'] != 'Unknown':
-                                            address_parts.append(row['country'])
-                                        
-                                        if address_parts:
-                                            full_address = ', '.join(address_parts)
-                                            st.write(f"**📍 Address:** {full_address}")
-                                            
-                                            # Google Maps link
-                                            maps_link = generate_individual_google_maps_link(row)
-                                            if maps_link:
-                                                st.markdown(f"🗺️ [View on Google Maps]({maps_link})")
-                            
-                            # Summary table
-                            st.subheader("📊 Summary Table")
-                            display_cols = ['establishment_name', 'firm_name', 'country', 'spl_operations']
-                            if any(results_df['fei_number'].notna()):
-                                display_cols.append('fei_number')
-                            if any(results_df['duns_number'].notna()):
-                                display_cols.append('duns_number')
-                            
-                            st.dataframe(results_df[display_cols], use_container_width=True)
-                            
-                    else:
-                        st.error(f"❌ No results found for NDC: {ndc_input}")
-                        st.info("💡 This NDC may not exist in DailyMed database. Try checking the NDC format.")
-                        
-                except Exception as e:
-                    st.error(f"❌ Error processing NDC: {str(e)}")
-                    with st.expander("Debug Information"):
-                        st.exception(e)
-        
-        # Sidebar info
-        st.sidebar.title("About This Tool")
-        st.sidebar.markdown("""
-        This tool finds manufacturing establishments for NDC numbers by:
-        
-        🔍 **Looking up the drug** in FDA databases  
-        📄 **Analyzing SPL documents** for establishment info  
-        🏭 **Matching FEI/DUNS numbers** to locations  
-        🌍 **Showing global manufacturing** network  
-        
-        **Data Sources:**
-        - FDA Structured Product Labels (SPL)
-        - FDA Establishment Registration Database  
-        - DailyMed Database
-        """)
-        
-        if 'mapper' in st.session_state:
-            st.sidebar.markdown("---")
-            st.sidebar.metric("FEI Database Entries", f"{len(st.session_state.mapper.fei_database):,}")
-            st.sidebar.metric("DUNS Database Entries", f"{len(st.session_state.mapper.duns_database):,}")
-        
-        st.sidebar.markdown("---")
-        st.sidebar.markdown("**Disclaimer:** For informational purposes only.")
+        # Show database loading results
+        if st.session_state.mapper.database_loaded:
+            st.success(f"✅ Database loaded successfully!")
+            
+            # Database statistics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("FEI Database Entries", f"{len(st.session_state.mapper.fei_database):,}")
+            with col2:
+                st.metric("DUNS Database Entries", f"{len(st.session_state.mapper.duns_database):,}")
+            with col3:
+                # Show current date as database date
+                current_date = datetime.now().strftime("%Y-%m-%d")
+                st.metric("Database Updated", current_date)
+                
+        else:
+            st.error("❌ Could not load establishment database")
+            st.info("💡 Please ensure the database file is available in the repository or check GitHub connectivity")
+            st.stop()
     
-    else:
-        st.info("👆 Please upload your DRLS registry Excel file to begin")
-        st.markdown("**What this tool does:**")
-        st.markdown("- 🔍 Looks up NDC numbers in FDA databases")
-        st.markdown("- 🏭 Finds manufacturing establishments")
-        st.markdown("- 📍 Shows locations and addresses")
-        st.markdown("- ⚙️ Displays manufacturing operations")
-        st.markdown("- 🌍 Maps global supply chains")
+    # NDC input section
+    st.markdown("---")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        ndc_input = st.text_input(
+            "Enter NDC Number:", 
+            placeholder="50242-061-01",
+            help="NDC format: 12345-678-90 or 1234567890"
+        )
+    with col2:
+        search_btn = st.button("🔍 Search", type="primary")
+    
+    # Example NDCs
+    st.markdown("**Try these examples:**")
+    examples = ["50242-061-01", "63323-262-06", "0093-7663-56"]
+    cols = st.columns(len(examples))
+    for i, ex in enumerate(examples):
+        with cols[i]:
+            if st.button(f"`{ex}`", key=f"ex_{i}"):
+                ndc_input = ex
+                search_btn = True
+    
+    # Search functionality
+    if search_btn and ndc_input:
+        with st.spinner(f"Looking up manufacturing locations for {ndc_input}..."):
+            try:
+                results_df = st.session_state.mapper.process_single_ndc(ndc_input)
+                
+                if len(results_df) > 0:
+                    first_row = results_df.iloc[0]
+                    
+                    # Check if establishments were found
+                    if first_row['search_method'] == 'no_establishments_found':
+                        st.warning(f"⚠️ Found product information for NDC {ndc_input}, but no manufacturing establishments detected")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Product Name", first_row['product_name'])
+                            st.metric("NDC Number", first_row['ndc'])
+                        with col2:
+                            labeler = first_row['labeler_name'] if first_row['labeler_name'] != 'Unknown' else 'Not specified'
+                            st.metric("Labeler", labeler)
+                            
+                            if first_row['spl_id']:
+                                spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
+                                st.markdown(f"📄 **SPL Document:** [View on DailyMed]({spl_url})")
+                        
+                        st.info("💡 This product may not have detailed establishment information in its SPL document, or the establishments may not be in the database.")
+                    
+                    else:
+                        # Full results with establishments
+                        st.success(f"✅ Found {len(results_df)} manufacturing establishments for NDC: {ndc_input}")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Product Name", first_row['product_name'])
+                            st.metric("NDC Number", first_row['ndc'])
+                        
+                        with col2:
+                            labeler = first_row['labeler_name'] if first_row['labeler_name'] != 'Unknown' else 'Not specified'
+                            st.metric("Labeler", labeler)
+                            
+                            if first_row['spl_id']:
+                                spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
+                                st.markdown(f"📄 **SPL Document:** [View on DailyMed]({spl_url})")
+                        
+                        # Country distribution
+                        if len(results_df) > 1:
+                            country_counts = results_df['country'].value_counts()
+                            country_summary = ", ".join([f"{country}: {count}" for country, count in country_counts.items()])
+                            st.markdown(f"🌍 **Country Distribution:** {country_summary}")
+                        
+                        # Manufacturing establishments
+                        st.subheader(f"🏭 Manufacturing Establishments ({len(results_df)})")
+                        
+                        for idx, row in results_df.iterrows():
+                            with st.expander(f"Establishment {idx + 1}: {row['establishment_name']}", expanded=True):
+                                col1, col2 = st.columns(2)
+                                
+                                with col1:
+                                    if row['fei_number']:
+                                        st.write(f"**🔢 FEI Number:** {row['fei_number']}")
+                                    if row['duns_number']:
+                                        st.write(f"**🔢 DUNS Number:** {row['duns_number']}")
+                                    if row['firm_name'] and row['firm_name'] != 'Unknown':
+                                        st.write(f"**🏢 Firm Name:** {row['firm_name']}")
+                                
+                                with col2:
+                                    if row['country'] and row['country'] != 'Unknown':
+                                        st.write(f"**🌍 Country:** {row['country']}")
+                                    if row['spl_operations'] and row['spl_operations'] != 'None found for this NDC':
+                                        st.write(f"**⚙️ Operations:** {row['spl_operations']}")
+                                
+                                # Address
+                                if row['address_line_1'] and 'not available' not in str(row['address_line_1']).lower() and row['address_line_1'] != 'Unknown':
+                                    address_parts = []
+                                    if row['address_line_1'] != 'Unknown':
+                                        address_parts.append(row['address_line_1'])
+                                    if row['city'] != 'Unknown':
+                                        address_parts.append(row['city'])
+                                    if row['state'] != 'Unknown':
+                                        address_parts.append(row['state'])
+                                    if row['postal_code']:
+                                        address_parts.append(row['postal_code'])
+                                    if row['country'] != 'Unknown':
+                                        address_parts.append(row['country'])
+                                    
+                                    if address_parts:
+                                        full_address = ', '.join(address_parts)
+                                        st.write(f"**📍 Address:** {full_address}")
+                                        
+                                        # Google Maps link
+                                        maps_link = generate_individual_google_maps_link(row)
+                                        if maps_link:
+                                            st.markdown(f"🗺️ [View on Google Maps]({maps_link})")
+                        
+                        # Summary table
+                        st.subheader("📊 Summary Table")
+                        display_cols = ['establishment_name', 'firm_name', 'country', 'spl_operations']
+                        if any(results_df['fei_number'].notna()):
+                            display_cols.append('fei_number')
+                        if any(results_df['duns_number'].notna()):
+                            display_cols.append('duns_number')
+                        
+                        st.dataframe(results_df[display_cols], use_container_width=True)
+                        
+                else:
+                    st.error(f"❌ No results found for NDC: {ndc_input}")
+                    st.info("💡 This NDC may not exist in DailyMed database. Try checking the NDC format.")
+                    
+            except Exception as e:
+                st.error(f"❌ Error processing NDC: {str(e)}")
+                with st.expander("Debug Information"):
+                    st.exception(e)
+    
+    # Sidebar info
+    st.sidebar.title("About This Tool")
+    st.sidebar.markdown("""
+    This tool finds manufacturing establishments for NDC numbers by:
+    
+    🔍 **Looking up the drug** in FDA databases  
+    📄 **Analyzing SPL documents** for establishment info  
+    🏭 **Matching FEI/DUNS numbers** to locations  
+    🌍 **Showing global manufacturing** network  
+    
+    **Data Sources:**
+    - FDA Structured Product Labels (SPL)
+    - FDA Establishment Registration Database  
+    - DailyMed Database
+    
+    **Features:**
+    - ✅ Automatic database loading
+    - ✅ No file upload required
+    - ✅ Real-time establishment analysis
+    - ✅ Google Maps integration
+    """)
+    
+    if 'mapper' in st.session_state and st.session_state.mapper.database_loaded:
+        st.sidebar.markdown("---")
+        st.sidebar.metric("FEI Database Entries", f"{len(st.session_state.mapper.fei_database):,}")
+        st.sidebar.metric("DUNS Database Entries", f"{len(st.session_state.mapper.duns_database):,}")
+        
+        # Show database status
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("**Database Status:**")
+        st.sidebar.success("✅ Loaded and Ready")
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Disclaimer:** For informational purposes only.")
 
 if __name__ == "__main__":
     main()
