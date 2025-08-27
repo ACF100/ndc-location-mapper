@@ -494,7 +494,7 @@ class NDCToLocationMapper:
             return None
 
     def find_fei_duns_matches_in_spl(self, spl_id: str) -> List[FEIMatch]:
-        """Find FEI and DUNS numbers in SPL that match the spreadsheet database"""
+        """ENHANCED: Find FEI and DUNS numbers in SPL with comprehensive pattern matching"""
         matches = []
         
         try:
@@ -506,13 +506,57 @@ class NDCToLocationMapper:
 
             content = response.text
             
-            # STRICT MATCHING: Only look for actual ID numbers in XML, not company names
-            id_pattern = r'<id\\s+([^>]*extension="(\\d{7,15})"[^>]*)'
-            id_matches = re.findall(id_pattern, content, re.IGNORECASE)
+            # COMPREHENSIVE PATTERNS - try multiple XML structures
+            patterns = [
+                # Standard extension patterns
+                r'<id[^>]+extension="(\d{7,15})"[^>]*>',
+                r'extension="(\d{7,15})"',
+                
+                # Root and extension combinations
+                r'root="[^"]*"[^>]*extension="(\d{7,15})"',
+                r'<id[^>]*root="[^"]*"[^>]*extension="(\d{7,15})"[^>]*>',
+                
+                # Assignee or entity ID patterns
+                r'<assignedEntity[^>]*>[^<]*<id[^>]*extension="(\d{7,15})"',
+                r'<id[^>]*extension="(\d{7,15})"[^>]*assigningAuthorityName',
+                
+                # Manufacturing establishment patterns
+                r'<manufacturingEntityValue[^>]*>[^<]*<id[^>]*extension="(\d{7,15})"',
+                r'<assigningAuthorityName[^>]*>[^<]*</assigningAuthorityName>[^<]*<id[^>]*extension="(\d{7,15})"',
+                
+                # FEI specific patterns
+                r'FEI[:\s#]*(\d{7,15})',
+                r'<code[^>]*code="(\d{7,15})"[^>]*displayName="[^"]*FEI',
+                
+                # Additional XML structure patterns
+                r'<territorialAuthority[^>]*>[^<]*<id[^>]*extension="(\d{7,15})"',
+                r'<representedOrganization[^>]*>[^<]*<id[^>]*extension="(\d{7,15})"',
+            ]
             
-            for full_match, extension in id_matches:
+            found_numbers = set()
+            
+            # Apply all patterns
+            for pattern in patterns:
+                try:
+                    matches_found = re.findall(pattern, content, re.IGNORECASE | re.DOTALL)
+                    for match in matches_found:
+                        if isinstance(match, str) and len(match) >= 7:
+                            found_numbers.add(match)
+                except Exception as e:
+                    continue
+            
+            # Debug: Show what numbers were found
+            if found_numbers:
+                st.info(f"🔍 Found potential ID numbers in SPL: {list(found_numbers)}")
+            
+            # Process all found numbers
+            for extension in found_numbers:
+                if not extension or len(extension) < 7:
+                    continue
+                    
                 clean_extension = re.sub(r'[^\d]', '', extension)
                 
+                # Check FEI database first
                 fei_match_found = False
                 fei_variants = self._generate_all_id_variants(extension)
                 
@@ -528,8 +572,10 @@ class NDCToLocationMapper:
                         )
                         matches.append(match)
                         fei_match_found = True
+                        st.success(f"✅ Matched FEI {clean_extension} to {establishment_name}")
                         break
                 
+                # Check DUNS database if no FEI match
                 if not fei_match_found:
                     duns_variants = self._generate_all_id_variants(extension)
                     
@@ -544,10 +590,15 @@ class NDCToLocationMapper:
                                 establishment_name=establishment_name
                             )
                             matches.append(match)
+                            st.success(f"✅ Matched DUNS {clean_extension} to {establishment_name}")
                             break
-                            
+                
+                # If no match found, show debug info
+                if not fei_match_found:
+                    st.warning(f"⚠️ Found ID {clean_extension} in SPL but no match in database")
+                    
         except Exception as e:
-            pass
+            st.error(f"Error searching SPL: {str(e)}")
             
         return matches
 
@@ -564,7 +615,7 @@ class NDCToLocationMapper:
             establishments_info = []
             processed_numbers = set()
 
-            # ONLY use strict FEI/DUNS matching - no fallback name matching!
+            # Use enhanced FEI/DUNS matching
             matches = self.find_fei_duns_matches_in_spl(spl_id)
             establishment_sections = re.findall(r'<assignedEntity[^>]*>.*?</assignedEntity>', content, re.DOTALL | re.IGNORECASE)
             
@@ -605,6 +656,12 @@ class NDCToLocationMapper:
                                         establishment_included = True
                             break
                     
+                    # If no operations found, still include establishment with basic info
+                    if not establishment_included:
+                        establishment_operations = ['Manufacturing (inferred from SPL)']
+                        establishment_quotes = ['Establishment found in SPL document']
+                        establishment_included = True
+                    
                     if establishment_included:
                         establishment_info['xml_location'] = match.xml_location
                         establishment_info['match_type'] = match.match_type
@@ -621,6 +678,7 @@ class NDCToLocationMapper:
             return [], [], establishments_info
 
         except Exception as e:
+            st.error(f"Error extracting establishments: {str(e)}")
             return [], [], []
 
     def extract_ndc_specific_operations(self, section: str, target_ndc: str, establishment_name: str) -> Tuple[List[str], List[str]]:
@@ -914,7 +972,7 @@ def main():
     
     # Example NDCs - include the problematic one
     st.markdown("**Try these examples:**")
-    examples = ["0185-0674-01", "50242-061-01", "63323-262-06", "63323-459-14"]
+    examples = ["0185-0674-01", "50242-061-10", "63323-262-06", "63323-459-14"]
     cols = st.columns(len(examples))
     for i, ex in enumerate(examples):
         with cols[i]:
@@ -1048,7 +1106,8 @@ def main():
     - ✅ Improved NDC format matching
     - ✅ Handles all NDC formats (4-4-2, 5-3-2, 5-4-2)
     - ✅ Enhanced labeler extraction
-    - ✅ STRICT establishment matching (FEI/DUNS only)
+    - ✅ Comprehensive FEI/DUNS pattern matching
+    - ✅ Debug information for troubleshooting
     """)
     
     if 'mapper' in st.session_state and st.session_state.mapper.database_loaded:
