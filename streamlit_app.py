@@ -409,8 +409,27 @@ class NDCToLocationMapper:
         # Convert to list and remove empty strings
         return [v for v in all_variants if v and len(v) >= 6]
 
+    def extract_labeler_from_product_name(self, product_name: str) -> str:
+        """Extract labeler name from product name when it's in brackets"""
+        try:
+            # Look for text in brackets at the end
+            bracket_match = re.search(r'\[([^\]]+)\]\s*$', product_name)
+            if bracket_match:
+                return bracket_match.group(1).strip()
+            
+            # Fallback: look for common patterns
+            if ' [' in product_name:
+                parts = product_name.split(' [')
+                if len(parts) > 1:
+                    labeler = parts[-1].replace(']', '').strip()
+                    return labeler
+                    
+            return 'Unknown'
+        except:
+            return 'Unknown'
+
     def get_ndc_info_from_dailymed(self, ndc: str) -> Optional[ProductInfo]:
-        """Get NDC info from DailyMed"""
+        """Get NDC info from DailyMed with better labeler extraction"""
         try:
             ndc_variants = self.normalize_ndc_for_matching(ndc)
             
@@ -427,10 +446,19 @@ class NDCToLocationMapper:
                         data = response.json()
                         if data.get('data'):
                             spl_data = data['data'][0]
+                            product_name = spl_data.get('title', 'Unknown')
+                            
+                            # Try to get labeler from API first
+                            labeler_name = spl_data.get('labeler', 'Unknown')
+                            
+                            # If labeler is missing or generic, extract from product name
+                            if not labeler_name or labeler_name == 'Unknown' or labeler_name == '':
+                                labeler_name = self.extract_labeler_from_product_name(product_name)
+                            
                             return ProductInfo(
                                 ndc=ndc,
-                                product_name=spl_data.get('title', 'Unknown'),
-                                labeler_name=spl_data.get('labeler', 'Unknown'),
+                                product_name=product_name,
+                                labeler_name=labeler_name,
                                 spl_id=spl_data.get('setid')
                             )
                 except Exception as e:
@@ -479,7 +507,7 @@ class NDCToLocationMapper:
             return None
 
     def extract_ndc_specific_operations(self, section: str, target_ndc: str, establishment_name: str) -> Tuple[List[str], List[str]]:
-        """Extract operations that are specific to the target NDC from an establishment section"""
+        """Extract operations - enhanced to find more operations"""
         operations = []
         quotes = []
 
@@ -500,13 +528,17 @@ class NDCToLocationMapper:
             'C43359': 'Manufacture'
         }
 
-        # Look for performance elements with actDefinition (this is the correct structure for SPL)
+        # Look for performance elements AND business operations
         performance_elements = re.findall(r'<performance[^>]*>.*?</performance>', section, re.DOTALL | re.IGNORECASE)
+        business_elements = re.findall(r'<businessOperation[^>]*>.*?</businessOperation>', section, re.DOTALL | re.IGNORECASE)
+        
+        # Combine both types of elements
+        all_elements = performance_elements + business_elements
 
-        for perf_elem in performance_elements:
-            # Extract operation code and displayName from actDefinition
+        for element in all_elements:
+            # Extract operation code and displayName
             operation_found = None
-            operation_code_match = re.search(r'<code[^>]*code="([^"]*)"[^>]*displayName="([^"]*)"', perf_elem, re.IGNORECASE)
+            operation_code_match = re.search(r'<code[^>]*code="([^"]*)"[^>]*displayName="([^"]*)"', element, re.IGNORECASE)
             
             if operation_code_match:
                 operation_code = operation_code_match.group(1)
@@ -515,34 +547,51 @@ class NDCToLocationMapper:
                 if operation_code in operation_codes:
                     operation_found = operation_codes[operation_code]
 
+            # Also check displayName directly for common operation words
+            if not operation_found:
+                display_name_match = re.search(r'displayName="([^"]*)"', element, re.IGNORECASE)
+                if display_name_match:
+                    display_name = display_name_match.group(1).lower()
+                    if 'manufacture' in display_name and 'api' not in display_name:
+                        operation_found = 'Manufacture'
+                    elif 'api' in display_name and 'manufacture' in display_name:
+                        operation_found = 'API Manufacture'
+                    elif 'analysis' in display_name or 'test' in display_name:
+                        operation_found = 'Analysis'
+                    elif 'pack' in display_name:
+                        operation_found = 'Pack'
+                    elif 'label' in display_name:
+                        operation_found = 'Label'
+                    elif 'steriliz' in display_name:
+                        operation_found = 'Sterilize'
+
             if operation_found:
-                # Look for NDC codes in manufacturedMaterialKind
-                ndc_code_pattern = r'<code[^>]*code="([^"]*)"[^>]*codeSystem="2\.16\.840\.1\.113883\.6\.69"'
-                ndc_matches = re.findall(ndc_code_pattern, perf_elem, re.IGNORECASE)
-                
-                ndc_found_in_operation = False
-                for ndc_code in ndc_matches:
-                    # Clean up the NDC code
-                    clean_ndc = ndc_code.strip()
+                # For business operations, add without NDC checking (more permissive)
+                if '<businessOperation' in element:
+                    if operation_found not in operations:
+                        operations.append(operation_found)
+                        quotes.append(f'Found {operation_found} operation in {establishment_name}')
+                else:
+                    # For performance elements, still check NDC matching
+                    ndc_code_pattern = r'<code[^>]*code="([^"]*)"[^>]*codeSystem="2\.16\.840\.1\.113883\.6\.69"'
+                    ndc_matches = re.findall(ndc_code_pattern, element, re.IGNORECASE)
                     
-                    # Generate variants for this NDC code
-                    potential_variants = self.normalize_ndc_for_matching(clean_ndc)
+                    ndc_found_in_operation = False
+                    for ndc_code in ndc_matches:
+                        clean_ndc = ndc_code.strip()
+                        potential_variants = self.normalize_ndc_for_matching(clean_ndc)
+                        matching_variants = [v for v in potential_variants if v in ndc_variants]
+                        if matching_variants:
+                            ndc_found_in_operation = True
+                            break
 
-                    # Check if any variant matches our target NDC
-                    matching_variants = [v for v in potential_variants if v in ndc_variants]
-                    if matching_variants:
-                        ndc_found_in_operation = True
-                        break
-
-                # If our target NDC was found in this operation, add it
-                if ndc_found_in_operation and operation_found not in operations:
-                    operations.append(operation_found)
-                    quotes.append(f'Found {operation_found} operation for NDC {target_ndc} in {establishment_name}')
+                    if ndc_found_in_operation and operation_found not in operations:
+                        operations.append(operation_found)
+                        quotes.append(f'Found {operation_found} operation for NDC {target_ndc} in {establishment_name}')
 
         # Remove "Manufacture" if "API Manufacture" is present
         if 'API Manufacture' in operations and 'Manufacture' in operations:
             operations.remove('Manufacture')
-            quotes = [q for q in quotes if 'Manufacture operation' not in q or 'API Manufacture operation' in q]
 
         return operations, quotes
 
@@ -916,7 +965,7 @@ def main():
         
         # Example NDCs
         st.markdown("**Try these examples:**")
-        examples = ["50242-061-01", "0093-7663-56", "0781-1506-10"]
+        examples = ["50242-061-01", "63323-262-06", "0093-7663-56"]
         cols = st.columns(len(examples))
         for i, ex in enumerate(examples):
             with cols[i]:
