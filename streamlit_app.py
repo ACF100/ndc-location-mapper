@@ -288,76 +288,113 @@ class NDCToLocationMapper:
         return len(digits_only) >= 8 and len(digits_only) <= 11
 
     def normalize_ndc(self, ndc: str) -> str:
-        """SIMPLE: Convert to standard 5-4-2 format that works with existing establishment matching"""
+        """Normalize NDC to standard format"""
         clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
         
-        # Remove dashes to get just digits
-        digits_only = clean_ndc.replace('-', '')
+        if '-' in clean_ndc:
+            if re.match(r'^\d{4,5}-\d{3,4}-\d{1,2}$', clean_ndc):
+                return clean_ndc
+            clean_ndc = clean_ndc.replace('-', '')
         
-        # Pad to 11 digits (standard format)
+        digits_only = clean_ndc
+        
         if len(digits_only) == 10:
             digits_only = '0' + digits_only
-        elif len(digits_only) == 9:
-            digits_only = '00' + digits_only
         elif len(digits_only) == 8:
             digits_only = '000' + digits_only
+        elif len(digits_only) == 9:
+            digits_only = '00' + digits_only
         
-        # Convert to 5-4-2 format (this is what was working!)
-        if len(digits_only) >= 11:
-            return f"{digits_only[:5]}-{digits_only[5:9]}-{digits_only[9:11]}"
-        
-        return clean_ndc
+        if len(digits_only) == 11:
+            return f"{digits_only[:5]}-{digits_only[5:9]}-{digits_only[9:]}"
+        elif len(digits_only) == 10:
+            return f"{digits_only[:5]}-{digits_only[5:8]}-{digits_only[8:]}"
+        else:
+            return clean_ndc
 
-def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
-    """Generate NDC variants for DailyMed API matching"""
-    clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
-    variants = set()
-    
-    # Add original format
-    variants.add(clean_ndc.strip())
-    
-    # Remove dashes to get base digits
-    digits_only = clean_ndc.replace('-', '')
-    variants.add(digits_only)
-    
-    # Handle different length formats
-    if len(digits_only) == 10:
-        # Try as 5-3-2 and 4-4-2
-        variants.add(f"{digits_only[:5]}-{digits_only[5:8]}-{digits_only[8:]}")
-        variants.add(f"{digits_only[:4]}-{digits_only[4:8]}-{digits_only[8:]}")
+    def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
+        """Generate multiple NDC formats for matching - includes segment conversion"""
+        clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
+        variants = set()  # Use set to avoid duplicates
         
-        # Also try with leading zero (11 digits)
-        padded = '0' + digits_only
-        variants.add(f"{padded[:5]}-{padded[5:9]}-{padded[9:]}")
-        variants.add(padded)
+        # Remove dashes to get base digits
+        digits_only = clean_ndc.replace('-', '')
         
-    elif len(digits_only) == 11:
-        # Try as 5-4-2
-        variants.add(f"{digits_only[:5]}-{digits_only[5:9]}-{digits_only[9:]}")
+        # Add the original digits
+        variants.add(digits_only)
         
-        # Also try removing leading zero
-        if digits_only.startswith('0'):
-            trimmed = digits_only[1:]
-            variants.add(f"{trimmed[:4]}-{trimmed[4:8]}-{trimmed[8:]}")
-            variants.add(trimmed)
-            
-    elif len(digits_only) == 9:
-        # Try as 4-3-2 and pad to 10/11
-        variants.add(f"{digits_only[:4]}-{digits_only[4:7]}-{digits_only[7:]}")
+        # Add segment conversion variants for 10-digit ↔ 11-digit conversion
+        if '-' in clean_ndc:
+            parts = clean_ndc.split('-')
+            if len(parts) == 3:
+                labeler, product, package = parts
+                
+                # 5-4-2 → 5-3-2 (remove leading zero from product)
+                if len(labeler) == 5 and len(product) == 4 and len(package) == 2 and product.startswith('0'):
+                    product_unpadded = product[1:]  # Remove first character
+                    variants.add(f"{labeler}-{product_unpadded}-{package}")
+                    variants.add(f"{labeler}{product_unpadded}{package}")
+                    variants.add(f"{labeler}-{product_unpadded}")  # Base format
+                    variants.add(f"{labeler}{product_unpadded}")
+                
+                # 5-3-2 → 5-4-2 (add leading zero to product)
+                elif len(labeler) == 5 and len(product) == 3 and len(package) == 2:
+                    product_padded = '0' + product  # Add leading zero
+                    variants.add(f"{labeler}-{product_padded}-{package}")
+                    variants.add(f"{labeler}{product_padded}{package}")
+                    variants.add(f"{labeler}-{product_padded}")  # Base format
+                    variants.add(f"{labeler}{product_padded}")
         
-        # Pad with zeros
-        for padding in ['0', '00']:
-            padded = padding + digits_only
-            if len(padded) == 10:
-                variants.add(f"{padded[:4]}-{padded[4:8]}-{padded[8:]}")
-                variants.add(f"{padded[:5]}-{padded[5:8]}-{padded[8:]}")
-            elif len(padded) == 11:
-                variants.add(f"{padded[:5]}-{padded[5:9]}-{padded[9:]}")
-            variants.add(padded)
-    
-    # Remove empty strings and return unique list
-    final_variants = [v for v in variants if v and len(v) >= 8]
-    return list(set(final_variants))
+        # Generate different length versions (original logic)
+        if len(digits_only) == 8:
+            variants.add('000' + digits_only)  # 11 digits
+            variants.add('00' + digits_only)   # 10 digits
+            variants.add('0' + digits_only)    # 9 digits
+        elif len(digits_only) == 9:
+            variants.add('00' + digits_only)   # 11 digits
+            variants.add('0' + digits_only)    # 10 digits
+            variants.add(digits_only[1:])      # 8 digits (remove leading zero)
+        elif len(digits_only) == 10:
+            variants.add('0' + digits_only)    # 11 digits
+            variants.add(digits_only[1:])      # 9 digits (remove leading zero)
+            variants.add(digits_only[2:])      # 8 digits (remove two leading zeros)
+        elif len(digits_only) == 11:
+            variants.add(digits_only[1:])      # 10 digits (remove leading zero)
+            variants.add(digits_only[2:])      # 9 digits (remove two leading zeros)
+            variants.add(digits_only[3:])      # 8 digits (remove three leading zeros)
+        
+        # Generate formatted versions for each variant
+        formatted_variants = set()
+        for variant in variants:
+            if len(variant) == 11:
+                formatted_variants.add(f"{variant[:5]}-{variant[5:9]}-{variant[9:]}")
+            elif len(variant) == 10:
+                formatted_variants.add(f"{variant[:5]}-{variant[5:8]}-{variant[8:]}")
+            elif len(variant) == 9:
+                formatted_variants.add(f"{variant[:4]}-{variant[4:7]}-{variant[7:]}")
+            elif len(variant) == 8:
+                formatted_variants.add(f"{variant[:4]}-{variant[4:6]}-{variant[6:]}")
+        
+        # Combine all variants
+        all_variants = variants.union(formatted_variants)
+        
+        # Add base NDC variants (labeler-product without package)
+        base_variants = set()
+        for variant in formatted_variants:
+            if '-' in variant:
+                parts = variant.split('-')
+                if len(parts) == 3:  # Standard NDC format
+                    base_ndc = f"{parts[0]}-{parts[1]}"  # Remove package part
+                    base_variants.add(base_ndc)
+                    
+                    # Also add base NDC without dashes
+                    base_ndc_no_dash = f"{parts[0]}{parts[1]}"
+                    base_variants.add(base_ndc_no_dash)
+        
+        all_variants = all_variants.union(base_variants)
+        
+        # Convert to list and remove empty strings
+        return [v for v in all_variants if v and len(v) >= 6]
 
     def extract_labeler_from_product_name(self, product_name: str) -> str:
         """Extract labeler name from product name when it's in brackets"""
@@ -377,9 +414,9 @@ def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
             return 'Unknown'
 
     def get_ndc_info_from_dailymed(self, ndc: str) -> Optional[ProductInfo]:
-        """Get NDC info from DailyMed with simple variant matching"""
+        """Get NDC info from DailyMed with improved variant matching"""
         try:
-            # Use simple variant generation
+            # Use the improved variant generation
             ndc_variants = self.normalize_ndc_for_matching(ndc)
             
             for ndc_variant in ndc_variants:
@@ -450,6 +487,62 @@ def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
             return None
         except Exception as e:
             return None
+
+    def find_fei_duns_matches_in_spl(self, spl_id: str) -> List[FEIMatch]:
+        """Find FEI and DUNS numbers in SPL that match the spreadsheet database"""
+        matches = []
+        
+        try:
+            spl_url = f"{self.dailymed_base_url}/services/v2/spls/{spl_id}.xml"
+            response = self.session.get(spl_url)
+
+            if response.status_code != 200:
+                return matches
+
+            content = response.text
+            id_pattern = r'<id\\s+([^>]*extension="(\\d{7,15})"[^>]*)'
+            id_matches = re.findall(id_pattern, content, re.IGNORECASE)
+            
+            for full_match, extension in id_matches:
+                clean_extension = re.sub(r'[^\\d]', '', extension)
+                
+                fei_match_found = False
+                fei_variants = self._generate_all_id_variants(extension)
+                
+                for fei_key in fei_variants:
+                    if fei_key in self.fei_database:
+                        establishment_name = self.fei_database[fei_key].get('establishment_name', 'Unknown')
+                        
+                        match = FEIMatch(
+                            fei_number=clean_extension,
+                            xml_location="SPL Document",
+                            match_type='FEI_NUMBER',
+                            establishment_name=establishment_name
+                        )
+                        matches.append(match)
+                        fei_match_found = True
+                        break
+                
+                if not fei_match_found:
+                    duns_variants = self._generate_all_id_variants(extension)
+                    
+                    for duns_key in duns_variants:
+                        if duns_key in self.duns_database:
+                            establishment_name = self.duns_database[duns_key].get('establishment_name', 'Unknown')
+                            
+                            match = FEIMatch(
+                                fei_number=clean_extension,
+                                xml_location="SPL Document",
+                                match_type='DUNS_NUMBER',
+                                establishment_name=establishment_name
+                            )
+                            matches.append(match)
+                            break
+                            
+        except Exception as e:
+            pass
+            
+        return matches
 
     def extract_ndc_specific_operations(self, section: str, target_ndc: str, establishment_name: str) -> Tuple[List[str], List[str]]:
         """Extract operations - enhanced to find more operations"""
@@ -590,64 +683,8 @@ def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
 
         return operations, quotes
 
-    def find_fei_duns_matches_in_spl(self, spl_id: str) -> List[FEIMatch]:
-        """ORIGINAL WORKING METHOD - don't change this!"""
-        matches = []
-        
-        try:
-            spl_url = f"{self.dailymed_base_url}/services/v2/spls/{spl_id}.xml"
-            response = self.session.get(spl_url)
-
-            if response.status_code != 200:
-                return matches
-
-            content = response.text
-            id_pattern = r'<id\\s+([^>]*extension="(\\d{7,15})"[^>]*)'
-            id_matches = re.findall(id_pattern, content, re.IGNORECASE)
-            
-            for full_match, extension in id_matches:
-                clean_extension = re.sub(r'[^\\d]', '', extension)
-                
-                fei_match_found = False
-                fei_variants = self._generate_all_id_variants(extension)
-                
-                for fei_key in fei_variants:
-                    if fei_key in self.fei_database:
-                        establishment_name = self.fei_database[fei_key].get('establishment_name', 'Unknown')
-                        
-                        match = FEIMatch(
-                            fei_number=clean_extension,
-                            xml_location="SPL Document",
-                            match_type='FEI_NUMBER',
-                            establishment_name=establishment_name
-                        )
-                        matches.append(match)
-                        fei_match_found = True
-                        break
-                
-                if not fei_match_found:
-                    duns_variants = self._generate_all_id_variants(extension)
-                    
-                    for duns_key in duns_variants:
-                        if duns_key in self.duns_database:
-                            establishment_name = self.duns_database[duns_key].get('establishment_name', 'Unknown')
-                            
-                            match = FEIMatch(
-                                fei_number=clean_extension,
-                                xml_location="SPL Document",
-                                match_type='DUNS_NUMBER',
-                                establishment_name=establishment_name
-                            )
-                            matches.append(match)
-                            break
-                            
-        except Exception as e:
-            pass
-            
-        return matches
-
     def extract_establishments_with_fei(self, spl_id: str, target_ndc: str) -> Tuple[List[str], List[str], List[Dict]]:
-        """ORIGINAL WORKING METHOD - don't change this!"""
+        """Extract operations, quotes, and detailed establishment info with FEI/DUNS numbers for specific NDC"""
         try:
             spl_url = f"{self.dailymed_base_url}/services/v2/spls/{spl_id}.xml"
             response = self.session.get(spl_url)
