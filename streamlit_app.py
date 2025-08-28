@@ -343,7 +343,7 @@ class NDCToLocationMapper:
         return len(digits_only) >= 8 and len(digits_only) <= 11
 
     def normalize_ndc(self, ndc: str) -> str:
-        """Normalize NDC to standard format - FIXED for correct segment conversion"""
+        """Normalize NDC to standard format - FIXED for all input formats"""
         # Remove any non-digit, non-dash characters
         clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
         
@@ -355,29 +355,32 @@ class NDCToLocationMapper:
             # If dashes are in wrong places, remove them and reformat
             clean_ndc = clean_ndc.replace('-', '')
         
-        # Work with digits only
+        # Work with digits only - this handles the case where NDC is entered without hyphens
         digits_only = clean_ndc
         
-        # FIXED: Proper segment conversion logic
-        if len(digits_only) == 10:
-            # For 10-digit NDCs, we need to determine the correct segmentation
-            # Standard format is 5-4-1 or 4-4-2
-            # Convert to 11-digit by padding the first segment
-            digits_only = '0' + digits_only
-        elif len(digits_only) == 8:
-            digits_only = '000' + digits_only
-        elif len(digits_only) == 9:
-            digits_only = '00' + digits_only
-        
-        # Format as 11-digit: 5-4-2
+        # FIXED: Handle all possible NDC lengths correctly
         if len(digits_only) == 11:
+            # 11-digit format: 5-4-2
             return f"{digits_only[:5]}-{digits_only[5:9]}-{digits_only[9:]}"
+        elif len(digits_only) == 10:
+            # 10-digit format: could be 5-3-2 or 4-4-2
+            # Most common is to pad to 11 digits and format as 5-4-2
+            padded = '0' + digits_only
+            return f"{padded[:5]}-{padded[5:9]}-{padded[9:]}"
+        elif len(digits_only) == 9:
+            # 9-digit format: pad to 11 and format
+            padded = '00' + digits_only
+            return f"{padded[:5]}-{padded[5:9]}-{padded[9:]}"
+        elif len(digits_only) == 8:
+            # 8-digit format: pad to 11 and format
+            padded = '000' + digits_only
+            return f"{padded[:5]}-{padded[5:9]}-{padded[9:]}"
         else:
             # Return original if we can't format it properly
             return clean_ndc
 
     def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
-        """Generate multiple NDC formats for matching - FIXED segment conversion"""
+        """Generate multiple NDC formats for matching - COMPLETELY FIXED"""
         clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
         variants = set()  # Use set to avoid duplicates
         
@@ -387,64 +390,94 @@ class NDCToLocationMapper:
         # Add the original digits
         variants.add(digits_only)
         
-        # FIXED: Correct NDC segment conversion
-        if '-' in clean_ndc:
-            parts = clean_ndc.split('-')
-            if len(parts) == 3:
-                labeler, product, package = parts
-                
-                # Handle 5-4-2 ↔ 5-3-2 conversion (product code padding/unpadding)
-                if len(labeler) == 5 and len(product) == 4 and len(package) == 2:
-                    # Remove leading zero from 4-digit product code if it starts with 0
-                    if product.startswith('0'):
-                        product_unpadded = product[1:]  # Remove leading zero
-                        variants.add(f"{labeler}-{product_unpadded}-{package}")
-                        variants.add(f"{labeler}{product_unpadded}{package}")
-                
-                elif len(labeler) == 5 and len(product) == 3 and len(package) == 2:
-                    # Add leading zero to 3-digit product code
-                    product_padded = '0' + product
-                    variants.add(f"{labeler}-{product_padded}-{package}")
-                    variants.add(f"{labeler}{product_padded}{package}")
-                
-                # Handle 4-4-2 ↔ 5-3-2 conversion (labeler code padding/unpadding)
-                elif len(labeler) == 4 and len(product) == 4 and len(package) == 2:
-                    # Pad labeler to 5 digits, unpad product to 3 digits if it starts with 0
-                    labeler_padded = '0' + labeler
-                    if product.startswith('0'):
-                        product_unpadded = product[1:]
-                        variants.add(f"{labeler_padded}-{product_unpadded}-{package}")
-                        variants.add(f"{labeler_padded}{product_unpadded}{package}")
+        # FIXED: Handle NDC input without hyphens more comprehensively
+        # For a string like "0069005801", we need to try different interpretations:
         
-        # Generate different length versions
+        if len(digits_only) == 10:
+            # 10-digit NDC could be interpreted as:
+            # 1. 5-3-2 format: first 5 digits are labeler, next 3 are product, last 2 are package
+            # 2. 4-4-2 format: first 4 digits are labeler, next 4 are product, last 2 are package
+            
+            # Interpretation 1: 5-3-2 (pad product to 4 digits)
+            labeler_5 = digits_only[:5]
+            product_3 = digits_only[5:8] 
+            package_2 = digits_only[8:]
+            
+            # Create 5-4-2 by padding product
+            product_4_padded = '0' + product_3
+            variant_5_4_2 = labeler_5 + product_4_padded + package_2
+            variants.add(variant_5_4_2)
+            variants.add(f"{labeler_5}-{product_4_padded}-{package_2}")
+            variants.add(f"{labeler_5}-{product_3}-{package_2}")  # Original 5-3-2
+            
+            # Interpretation 2: 4-4-2 (pad labeler to 5 digits)
+            labeler_4 = digits_only[:4]
+            product_4 = digits_only[4:8]
+            package_2 = digits_only[8:]
+            
+            # Create 5-4-2 by padding labeler
+            labeler_5_padded = '0' + labeler_4
+            variant_5_4_2_alt = labeler_5_padded + product_4 + package_2
+            variants.add(variant_5_4_2_alt)
+            variants.add(f"{labeler_5_padded}-{product_4}-{package_2}")
+            variants.add(f"{labeler_4}-{product_4}-{package_2}")  # Original 4-4-2
+            
+            # If product starts with 0, also try without the leading 0
+            if product_4.startswith('0'):
+                product_3_unpadded = product_4[1:]
+                variants.add(f"{labeler_5_padded}-{product_3_unpadded}-{package_2}")
+                variants.add(labeler_5_padded + product_3_unpadded + package_2)
+
+        elif len(digits_only) == 11:
+            # 11-digit format - try different segment interpretations
+            # Standard 5-4-2
+            labeler_5 = digits_only[:5]
+            product_4 = digits_only[5:9]
+            package_2 = digits_only[9:]
+            
+            variants.add(f"{labeler_5}-{product_4}-{package_2}")
+            
+            # Try 5-3-2 by removing leading zero from product if it starts with 0
+            if product_4.startswith('0'):
+                product_3 = product_4[1:]
+                variant_5_3_2 = labeler_5 + product_3 + package_2
+                variants.add(variant_5_3_2)
+                variants.add(f"{labeler_5}-{product_3}-{package_2}")
+            
+            # Try 4-4-2 by removing leading zero from labeler if it starts with 0
+            if labeler_5.startswith('0'):
+                labeler_4 = labeler_5[1:]
+                variant_4_4_2 = labeler_4 + product_4 + package_2
+                variants.add(variant_4_4_2)
+                variants.add(f"{labeler_4}-{product_4}-{package_2}")
+
+        # Handle other lengths
         if len(digits_only) == 8:
+            # Pad to different lengths
             variants.add('000' + digits_only)  # 11 digits
-            variants.add('00' + digits_only)   # 10 digits
+            variants.add('00' + digits_only)   # 10 digits  
             variants.add('0' + digits_only)    # 9 digits
         elif len(digits_only) == 9:
             variants.add('00' + digits_only)   # 11 digits
             variants.add('0' + digits_only)    # 10 digits
-            variants.add(digits_only[1:])      # 8 digits (remove leading zero)
-        elif len(digits_only) == 10:
-            variants.add('0' + digits_only)    # 11 digits
-            variants.add(digits_only[1:])      # 9 digits (remove leading zero)
-            variants.add(digits_only[2:])      # 8 digits (remove two leading zeros)
-        elif len(digits_only) == 11:
-            variants.add(digits_only[1:])      # 10 digits (remove leading zero)
-            variants.add(digits_only[2:])      # 9 digits (remove two leading zeros)
-            variants.add(digits_only[3:])      # 8 digits (remove three leading zeros)
-        
-        # Generate formatted versions for each variant
+            if digits_only.startswith('0'):
+                variants.add(digits_only[1:])  # 8 digits (remove leading zero)
+
+        # Generate ALL possible formatted versions
         formatted_variants = set()
-        for variant in variants:
-            if len(variant) == 11:
-                formatted_variants.add(f"{variant[:5]}-{variant[5:9]}-{variant[9:]}")
-            elif len(variant) == 10:
-                formatted_variants.add(f"{variant[:5]}-{variant[5:8]}-{variant[8:]}")
-            elif len(variant) == 9:
-                formatted_variants.add(f"{variant[:4]}-{variant[4:7]}-{variant[7:]}")
-            elif len(variant) == 8:
-                formatted_variants.add(f"{variant[:4]}-{variant[4:6]}-{variant[6:]}")
+        for variant in list(variants):
+            variant_clean = variant.replace('-', '')
+            
+            if len(variant_clean) == 11:
+                formatted_variants.add(f"{variant_clean[:5]}-{variant_clean[5:9]}-{variant_clean[9:]}")
+            elif len(variant_clean) == 10:
+                # Try both 5-3-2 and 4-4-2 interpretations
+                formatted_variants.add(f"{variant_clean[:5]}-{variant_clean[5:8]}-{variant_clean[8:]}")  # 5-3-2
+                formatted_variants.add(f"{variant_clean[:4]}-{variant_clean[4:8]}-{variant_clean[8:]}")  # 4-4-2
+            elif len(variant_clean) == 9:
+                formatted_variants.add(f"{variant_clean[:4]}-{variant_clean[4:7]}-{variant_clean[7:]}")
+            elif len(variant_clean) == 8:
+                formatted_variants.add(f"{variant_clean[:4]}-{variant_clean[4:6]}-{variant_clean[6:]}")
         
         # Combine all variants
         all_variants = variants.union(formatted_variants)
@@ -452,7 +485,7 @@ class NDCToLocationMapper:
         # Add base NDC variants (labeler-product without package)
         base_variants = set()
         for variant in formatted_variants:
-            if '-' in variant:
+            if '-' in variant and variant.count('-') == 2:
                 parts = variant.split('-')
                 if len(parts) == 3:  # Standard NDC format
                     base_ndc = f"{parts[0]}-{parts[1]}"  # Remove package part
@@ -1429,12 +1462,12 @@ def main():
                 ndc_input = ex
                 search_btn = True
     
-    # Information links
+    # Information links - REMOVED manufacturing operations link
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("📖 [How to find your medication's National Drug Code](https://dailymed.nlm.nih.gov/dailymed/help.cfm)")
     with col2:
-        st.markdown("📋 [Understanding manufacturing operations](https://www.fda.gov/drugs/pharmaceutical-quality-resources/pharmaceutical-quality-resources)")
+        st.markdown("📋 [About FDA drug databases](https://www.fda.gov/drugs/drug-approvals-and-databases)")
     
     # Search functionality
     if search_btn and ndc_input:
