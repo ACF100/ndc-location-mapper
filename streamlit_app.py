@@ -288,118 +288,40 @@ class NDCToLocationMapper:
         return len(digits_only) >= 8 and len(digits_only) <= 11
 
     def normalize_ndc(self, ndc: str) -> str:
-        """Normalize NDC to standard format"""
+        """SIMPLE: Convert to standard 5-4-2 format that works with existing establishment matching"""
         clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
         
-        if '-' in clean_ndc:
-            if re.match(r'^\d{4,5}-\d{3,4}-\d{1,2}$', clean_ndc):
-                return clean_ndc
-            clean_ndc = clean_ndc.replace('-', '')
+        # Remove dashes to get just digits
+        digits_only = clean_ndc.replace('-', '')
         
-        digits_only = clean_ndc
-        
+        # Pad to 11 digits (standard format)
         if len(digits_only) == 10:
             digits_only = '0' + digits_only
-        elif len(digits_only) == 8:
-            digits_only = '000' + digits_only
         elif len(digits_only) == 9:
             digits_only = '00' + digits_only
+        elif len(digits_only) == 8:
+            digits_only = '000' + digits_only
         
-        if len(digits_only) == 11:
-            return f"{digits_only[:5]}-{digits_only[5:9]}-{digits_only[9:]}"
-        elif len(digits_only) == 10:
-            return f"{digits_only[:5]}-{digits_only[5:8]}-{digits_only[8:]}"
-        else:
-            return clean_ndc
+        # Convert to 5-4-2 format (this is what was working!)
+        if len(digits_only) >= 11:
+            return f"{digits_only[:5]}-{digits_only[5:9]}-{digits_only[9:11]}"
+        
+        return clean_ndc
 
     def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
-        """IMPROVED: Generate comprehensive NDC variants for matching all formats"""
-        clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
-        variants = set()
+        """SIMPLE: Just try the standard format that was working + original"""
+        # Get the standard normalized format
+        normalized = self.normalize_ndc(ndc)
         
-        # ALWAYS add the original NDC as-is (this was missing!)
-        variants.add(clean_ndc.strip())
+        # Return both the original and normalized
+        variants = [
+            ndc.strip(),
+            normalized,
+            normalized.replace('-', '')
+        ]
         
-        # Remove dashes to get base digits
-        digits_only = clean_ndc.replace('-', '')
-        variants.add(digits_only)
-        
-        # Add simple variants first
-        variants.add(clean_ndc.replace('-', ''))
-        variants.add(clean_ndc)
-        
-        # Handle segment conversion for dashed NDCs
-        if '-' in clean_ndc:
-            parts = clean_ndc.split('-')
-            if len(parts) == 3:
-                labeler, product, package = parts
-                
-                # For 4-4-2 format (like 0185-0674-01), try 5-4-2
-                if len(labeler) == 4 and len(product) == 4 and len(package) == 2:
-                    new_labeler = '0' + labeler
-                    new_format = f"{new_labeler}-{product}-{package}"
-                    variants.add(new_format)
-                    variants.add(new_format.replace('-', ''))
-                
-                # For 5-4-2 format, try 4-4-2 
-                elif len(labeler) == 5 and len(product) == 4 and len(package) == 2:
-                    if labeler.startswith('0'):
-                        new_labeler = labeler[1:]
-                        new_format = f"{new_labeler}-{product}-{package}"
-                        variants.add(new_format)
-                        variants.add(new_format.replace('-', ''))
-                
-                # For 5-3-2, try 5-4-2 (pad product)
-                elif len(labeler) == 5 and len(product) == 3 and len(package) == 2:
-                    product_padded = '0' + product
-                    variants.add(f"{labeler}-{product_padded}-{package}")
-                    variants.add(f"{labeler}{product_padded}{package}")
-                
-                # For 4-3-2, try multiple conversions
-                elif len(labeler) == 4 and len(product) == 3 and len(package) == 2:
-                    # Try 5-3-2 (pad labeler)
-                    labeler_padded = '0' + labeler
-                    variants.add(f"{labeler_padded}-{product}-{package}")
-                    variants.add(f"{labeler_padded}{product}{package}")
-                    
-                    # Try 4-4-2 (pad product)
-                    product_padded = '0' + product
-                    variants.add(f"{labeler}-{product_padded}-{package}")
-                    variants.add(f"{labeler}{product_padded}{package}")
-        
-        # Generate all length variations (comprehensive padding)
-        base_digits = digits_only
-        for target_length in [8, 9, 10, 11]:
-            if len(base_digits) < target_length:
-                # Pad with leading zeros
-                padded = base_digits.zfill(target_length)
-                variants.add(padded)
-                
-                # Add formatted versions
-                if target_length == 11:
-                    variants.add(f"{padded[:5]}-{padded[5:9]}-{padded[9:]}")
-                elif target_length == 10:
-                    variants.add(f"{padded[:5]}-{padded[5:8]}-{padded[8:]}")  # 5-3-2
-                    variants.add(f"{padded[:4]}-{padded[4:8]}-{padded[8:]}")  # 4-4-2
-                elif target_length == 9:
-                    variants.add(f"{padded[:4]}-{padded[4:7]}-{padded[7:]}")  # 4-3-2
-            
-            elif len(base_digits) > target_length:
-                # Remove leading zeros
-                trimmed = base_digits.lstrip('0')
-                if len(trimmed) == target_length:
-                    variants.add(trimmed)
-                    
-                    # Add formatted versions
-                    if target_length == 10:
-                        variants.add(f"{trimmed[:5]}-{trimmed[5:8]}-{trimmed[8:]}")
-                        variants.add(f"{trimmed[:4]}-{trimmed[4:8]}-{trimmed[8:]}")
-                    elif target_length == 9:
-                        variants.add(f"{trimmed[:4]}-{trimmed[4:7]}-{trimmed[7:]}")
-        
-        # Remove empty strings and return unique list
-        final_variants = [v for v in variants if v and len(v) >= 6]
-        return list(set(final_variants))
+        # Remove duplicates and empty strings
+        return list(dict.fromkeys([v for v in variants if v]))
 
     def extract_labeler_from_product_name(self, product_name: str) -> str:
         """Extract labeler name from product name when it's in brackets"""
@@ -419,9 +341,9 @@ class NDCToLocationMapper:
             return 'Unknown'
 
     def get_ndc_info_from_dailymed(self, ndc: str) -> Optional[ProductInfo]:
-        """Get NDC info from DailyMed with improved variant matching"""
+        """Get NDC info from DailyMed with simple variant matching"""
         try:
-            # Use the improved variant generation
+            # Use simple variant generation
             ndc_variants = self.normalize_ndc_for_matching(ndc)
             
             for ndc_variant in ndc_variants:
@@ -492,162 +414,6 @@ class NDCToLocationMapper:
             return None
         except Exception as e:
             return None
-
-    def find_fei_duns_matches_in_spl(self, spl_id: str) -> List[FEIMatch]:
-        """Find FEI and DUNS numbers in SPL that match the spreadsheet database"""
-        matches = []
-        
-        try:
-            spl_url = f"{self.dailymed_base_url}/services/v2/spls/{spl_id}.xml"
-            response = self.session.get(spl_url)
-
-            if response.status_code != 200:
-                return matches
-
-            content = response.text
-            
-            # Original working pattern + a few key additions
-            patterns = [
-                r'<id\\s+([^>]*extension="(\\d{7,15})"[^>]*)',
-                r'extension="(\\d{7,15})"'
-            ]
-            
-            found_numbers = set()
-            
-            for pattern in patterns:
-                if pattern.count('(') == 1:
-                    # Simple pattern 
-                    id_matches = re.findall(pattern, content, re.IGNORECASE)
-                    for extension in id_matches:
-                        if isinstance(extension, str) and len(extension) >= 7:
-                            found_numbers.add(extension)
-                else:
-                    # Complex pattern
-                    id_matches = re.findall(pattern, content, re.IGNORECASE)
-                    for match in id_matches:
-                        if isinstance(match, tuple):
-                            extension = match[-1]
-                        else:
-                            extension = match
-                        if len(extension) >= 7:
-                            found_numbers.add(extension)
-            
-            # Process found numbers
-            for extension in found_numbers:
-                if not extension or len(extension) < 7:
-                    continue
-                    
-                clean_extension = re.sub(r'[^\d]', '', extension)
-                
-                # Check FEI database first
-                fei_match_found = False
-                fei_variants = self._generate_all_id_variants(extension)
-                
-                for fei_key in fei_variants:
-                    if fei_key in self.fei_database:
-                        establishment_name = self.fei_database[fei_key].get('establishment_name', 'Unknown')
-                        
-                        match = FEIMatch(
-                            fei_number=clean_extension,
-                            xml_location="SPL Document",
-                            match_type='FEI_NUMBER',
-                            establishment_name=establishment_name
-                        )
-                        matches.append(match)
-                        fei_match_found = True
-                        break
-                
-                if not fei_match_found:
-                    duns_variants = self._generate_all_id_variants(extension)
-                    
-                    for duns_key in duns_variants:
-                        if duns_key in self.duns_database:
-                            establishment_name = self.duns_database[duns_key].get('establishment_name', 'Unknown')
-                            
-                            match = FEIMatch(
-                                fei_number=clean_extension,
-                                xml_location="SPL Document",
-                                match_type='DUNS_NUMBER',
-                                establishment_name=establishment_name
-                            )
-                            matches.append(match)
-                            break
-                            
-        except Exception as e:
-            pass
-            
-        return matches
-
-    def extract_establishments_with_fei(self, spl_id: str, target_ndc: str) -> Tuple[List[str], List[str], List[Dict]]:
-        """Extract operations, quotes, and detailed establishment info with FEI/DUNS numbers for specific NDC"""
-        try:
-            spl_url = f"{self.dailymed_base_url}/services/v2/spls/{spl_id}.xml"
-            response = self.session.get(spl_url)
-
-            if response.status_code != 200:
-                return [], [], []
-
-            content = response.text
-            establishments_info = []
-            processed_numbers = set()
-
-            matches = self.find_fei_duns_matches_in_spl(spl_id)
-            establishment_sections = re.findall(r'<assignedEntity[^>]*>.*?</assignedEntity>', content, re.DOTALL | re.IGNORECASE)
-            
-            for match in matches:
-                if match.fei_number in processed_numbers:
-                    continue
-                
-                processed_numbers.add(match.fei_number)
-                
-                if match.match_type == 'FEI_NUMBER':
-                    establishment_info = self.lookup_fei_establishment(match.fei_number)
-                else:
-                    establishment_info = self.lookup_duns_establishment(match.fei_number)
-                
-                if establishment_info:
-                    establishment_operations = []
-                    establishment_quotes = []
-                    establishment_included = False
-                    
-                    for section in establishment_sections:
-                        if match.fei_number in section:
-                            name_match = re.search(r'<name[^>]*>([^<]+)</name>', section)
-                            section_establishment_name = name_match.group(1) if name_match else establishment_info.get('establishment_name', 'Unknown')
-                            
-                            ops, quotes = self.extract_ndc_specific_operations(section, target_ndc, section_establishment_name)
-                            
-                            if ops:
-                                establishment_operations.extend(ops)
-                                establishment_quotes.extend(quotes)
-                                establishment_included = True
-                            else:
-                                all_business_ops = re.findall(r'<businessOperation[^>]*>.*?</businessOperation>', section, re.DOTALL | re.IGNORECASE)
-                                if all_business_ops:
-                                    general_ops, general_quotes = self.extract_general_operations(section, section_establishment_name)
-                                    if general_ops:
-                                        establishment_operations.extend(general_ops)
-                                        establishment_quotes.extend([f"General operation (not NDC-specific): {q}" for q in general_quotes])
-                                        establishment_included = True
-                            break
-                    
-                    if establishment_included:
-                        establishment_info['xml_location'] = match.xml_location
-                        establishment_info['match_type'] = match.match_type
-                        establishment_info['xml_context'] = match.xml_context if hasattr(match, 'xml_context') else ''
-                        
-                        establishment_operations = list(dict.fromkeys(establishment_operations))
-                        establishment_quotes = list(dict.fromkeys(establishment_quotes))
-                        
-                        establishment_info['operations'] = establishment_operations
-                        establishment_info['quotes'] = establishment_quotes
-                        
-                        establishments_info.append(establishment_info)
-
-            return [], [], establishments_info
-
-        except Exception as e:
-            return [], [], []
 
     def extract_ndc_specific_operations(self, section: str, target_ndc: str, establishment_name: str) -> Tuple[List[str], List[str]]:
         """Extract operations - enhanced to find more operations"""
@@ -787,6 +553,133 @@ class NDCToLocationMapper:
             quotes = [q for q in quotes if 'Manufacture operation' not in q or 'API Manufacture operation' in q]
 
         return operations, quotes
+
+    def find_fei_duns_matches_in_spl(self, spl_id: str) -> List[FEIMatch]:
+        """ORIGINAL WORKING METHOD - don't change this!"""
+        matches = []
+        
+        try:
+            spl_url = f"{self.dailymed_base_url}/services/v2/spls/{spl_id}.xml"
+            response = self.session.get(spl_url)
+
+            if response.status_code != 200:
+                return matches
+
+            content = response.text
+            id_pattern = r'<id\\s+([^>]*extension="(\\d{7,15})"[^>]*)'
+            id_matches = re.findall(id_pattern, content, re.IGNORECASE)
+            
+            for full_match, extension in id_matches:
+                clean_extension = re.sub(r'[^\\d]', '', extension)
+                
+                fei_match_found = False
+                fei_variants = self._generate_all_id_variants(extension)
+                
+                for fei_key in fei_variants:
+                    if fei_key in self.fei_database:
+                        establishment_name = self.fei_database[fei_key].get('establishment_name', 'Unknown')
+                        
+                        match = FEIMatch(
+                            fei_number=clean_extension,
+                            xml_location="SPL Document",
+                            match_type='FEI_NUMBER',
+                            establishment_name=establishment_name
+                        )
+                        matches.append(match)
+                        fei_match_found = True
+                        break
+                
+                if not fei_match_found:
+                    duns_variants = self._generate_all_id_variants(extension)
+                    
+                    for duns_key in duns_variants:
+                        if duns_key in self.duns_database:
+                            establishment_name = self.duns_database[duns_key].get('establishment_name', 'Unknown')
+                            
+                            match = FEIMatch(
+                                fei_number=clean_extension,
+                                xml_location="SPL Document",
+                                match_type='DUNS_NUMBER',
+                                establishment_name=establishment_name
+                            )
+                            matches.append(match)
+                            break
+                            
+        except Exception as e:
+            pass
+            
+        return matches
+
+    def extract_establishments_with_fei(self, spl_id: str, target_ndc: str) -> Tuple[List[str], List[str], List[Dict]]:
+        """ORIGINAL WORKING METHOD - don't change this!"""
+        try:
+            spl_url = f"{self.dailymed_base_url}/services/v2/spls/{spl_id}.xml"
+            response = self.session.get(spl_url)
+
+            if response.status_code != 200:
+                return [], [], []
+
+            content = response.text
+            establishments_info = []
+            processed_numbers = set()
+
+            matches = self.find_fei_duns_matches_in_spl(spl_id)
+            establishment_sections = re.findall(r'<assignedEntity[^>]*>.*?</assignedEntity>', content, re.DOTALL | re.IGNORECASE)
+            
+            for match in matches:
+                if match.fei_number in processed_numbers:
+                    continue
+                
+                processed_numbers.add(match.fei_number)
+                
+                if match.match_type == 'FEI_NUMBER':
+                    establishment_info = self.lookup_fei_establishment(match.fei_number)
+                else:
+                    establishment_info = self.lookup_duns_establishment(match.fei_number)
+                
+                if establishment_info:
+                    establishment_operations = []
+                    establishment_quotes = []
+                    establishment_included = False
+                    
+                    for section in establishment_sections:
+                        if match.fei_number in section:
+                            name_match = re.search(r'<name[^>]*>([^<]+)</name>', section)
+                            section_establishment_name = name_match.group(1) if name_match else establishment_info.get('establishment_name', 'Unknown')
+                            
+                            ops, quotes = self.extract_ndc_specific_operations(section, target_ndc, section_establishment_name)
+                            
+                            if ops:
+                                establishment_operations.extend(ops)
+                                establishment_quotes.extend(quotes)
+                                establishment_included = True
+                            else:
+                                all_business_ops = re.findall(r'<businessOperation[^>]*>.*?</businessOperation>', section, re.DOTALL | re.IGNORECASE)
+                                if all_business_ops:
+                                    general_ops, general_quotes = self.extract_general_operations(section, section_establishment_name)
+                                    if general_ops:
+                                        establishment_operations.extend(general_ops)
+                                        establishment_quotes.extend([f"General operation (not NDC-specific): {q}" for q in general_quotes])
+                                        establishment_included = True
+                            break
+                    
+                    if establishment_included:
+                        establishment_info['xml_location'] = match.xml_location
+                        establishment_info['match_type'] = match.match_type
+                        establishment_info['xml_context'] = match.xml_context if hasattr(match, 'xml_context') else ''
+                        
+                        establishment_operations = list(dict.fromkeys(establishment_operations))
+                        establishment_quotes = list(dict.fromkeys(establishment_quotes))
+                        
+                        establishment_info['operations'] = establishment_operations
+                        establishment_info['quotes'] = establishment_quotes
+                        
+                        establishments_info.append(establishment_info)
+
+            return [], [], establishments_info
+
+        except Exception as e:
+            return [], [], []
 
     def process_single_ndc(self, ndc: str) -> pd.DataFrame:
         """Process a single NDC number with improved matching and deduplication"""
