@@ -295,7 +295,7 @@ class NDCToLocationMapper:
                     parts['country'] = last_part
 
             # Extract postal code (look for patterns like 12345 or 12345-6789)
-            postal_match = re.search(r'\\b(\\d{5}(?:-\\d{4})?|\\d{4,6})\\b', address)
+            postal_match = re.search(r'\b(\d{5}(?:-\d{4})?|\d{4,6})\b', address)
             if postal_match:
                 parts['postal_code'] = postal_match.group(1)
 
@@ -343,7 +343,7 @@ class NDCToLocationMapper:
         return len(digits_only) >= 8 and len(digits_only) <= 11
 
     def normalize_ndc(self, ndc: str) -> str:
-        """Normalize NDC to standard format - more flexible"""
+        """Normalize NDC to standard format - FIXED for correct segment conversion"""
         # Remove any non-digit, non-dash characters
         clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
         
@@ -358,25 +358,26 @@ class NDCToLocationMapper:
         # Work with digits only
         digits_only = clean_ndc
         
-        # Pad to 11 digits if it's 10 digits
+        # FIXED: Proper segment conversion logic
         if len(digits_only) == 10:
+            # For 10-digit NDCs, we need to determine the correct segmentation
+            # Standard format is 5-4-1 or 4-4-2
+            # Convert to 11-digit by padding the first segment
             digits_only = '0' + digits_only
         elif len(digits_only) == 8:
             digits_only = '000' + digits_only
         elif len(digits_only) == 9:
             digits_only = '00' + digits_only
         
-        # Format based on length
+        # Format as 11-digit: 5-4-2
         if len(digits_only) == 11:
             return f"{digits_only[:5]}-{digits_only[5:9]}-{digits_only[9:]}"
-        elif len(digits_only) == 10:
-            return f"{digits_only[:5]}-{digits_only[5:8]}-{digits_only[8:]}"
         else:
             # Return original if we can't format it properly
             return clean_ndc
 
     def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
-        """Generate multiple NDC formats for matching - includes segment conversion"""
+        """Generate multiple NDC formats for matching - FIXED segment conversion"""
         clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
         variants = set()  # Use set to avoid duplicates
         
@@ -386,29 +387,36 @@ class NDCToLocationMapper:
         # Add the original digits
         variants.add(digits_only)
         
-        # Add segment conversion variants for 10-digit ↔ 11-digit conversion
+        # FIXED: Correct NDC segment conversion
         if '-' in clean_ndc:
             parts = clean_ndc.split('-')
             if len(parts) == 3:
                 labeler, product, package = parts
                 
-                # 5-4-2 → 5-3-2 (remove leading zero from product)
-                if len(labeler) == 5 and len(product) == 4 and len(package) == 2 and product.startswith('0'):
-                    product_unpadded = product[1:]  # Remove first character
-                    variants.add(f"{labeler}-{product_unpadded}-{package}")
-                    variants.add(f"{labeler}{product_unpadded}{package}")
-                    variants.add(f"{labeler}-{product_unpadded}")  # Base format
-                    variants.add(f"{labeler}{product_unpadded}")
+                # Handle 5-4-2 ↔ 5-3-2 conversion (product code padding/unpadding)
+                if len(labeler) == 5 and len(product) == 4 and len(package) == 2:
+                    # Remove leading zero from 4-digit product code if it starts with 0
+                    if product.startswith('0'):
+                        product_unpadded = product[1:]  # Remove leading zero
+                        variants.add(f"{labeler}-{product_unpadded}-{package}")
+                        variants.add(f"{labeler}{product_unpadded}{package}")
                 
-                # 5-3-2 → 5-4-2 (add leading zero to product)
                 elif len(labeler) == 5 and len(product) == 3 and len(package) == 2:
-                    product_padded = '0' + product  # Add leading zero
+                    # Add leading zero to 3-digit product code
+                    product_padded = '0' + product
                     variants.add(f"{labeler}-{product_padded}-{package}")
                     variants.add(f"{labeler}{product_padded}{package}")
-                    variants.add(f"{labeler}-{product_padded}")  # Base format
-                    variants.add(f"{labeler}{product_padded}")
+                
+                # Handle 4-4-2 ↔ 5-3-2 conversion (labeler code padding/unpadding)
+                elif len(labeler) == 4 and len(product) == 4 and len(package) == 2:
+                    # Pad labeler to 5 digits, unpad product to 3 digits if it starts with 0
+                    labeler_padded = '0' + labeler
+                    if product.startswith('0'):
+                        product_unpadded = product[1:]
+                        variants.add(f"{labeler_padded}-{product_unpadded}-{package}")
+                        variants.add(f"{labeler_padded}{product_unpadded}{package}")
         
-        # Generate different length versions (original logic)
+        # Generate different length versions
         if len(digits_only) == 8:
             variants.add('000' + digits_only)  # 11 digits
             variants.add('00' + digits_only)   # 10 digits
@@ -1124,15 +1132,22 @@ class NDCToLocationMapper:
             return [], [], []
 
     def get_establishment_info(self, product_info: ProductInfo) -> List[Dict]:
-        """Get establishment information for a product with NDC-specific operations"""
+        """Get establishment information for a product with NDC-specific operations - FIXED"""
         establishments = []
 
-        # Extract company names
-        company_names = self.extract_company_names(product_info)
-
-        # Create establishments from SPL data with NDC-specific operations
-        establishments = self.create_establishments_from_spl(company_names, product_info)
-
+        # FIXED: Check if we have real manufacturing establishments first
+        if product_info.spl_id:
+            # Get operations and establishment info from SPL for the specific NDC
+            _, _, establishments_info = self.extract_establishments_with_fei(product_info.spl_id, product_info.ndc)
+            
+            if establishments_info:
+                # We found real manufacturing establishments
+                establishments = establishments_info
+            else:
+                # FIXED: No manufacturing establishments found - don't create labeler entry
+                # Just return empty list so the calling code knows to show "no establishments found"
+                pass
+        
         return establishments[:10]  # Limit to 10 establishments to avoid too many results
 
     def extract_company_names(self, product_info: ProductInfo) -> List[str]:
@@ -1162,12 +1177,7 @@ class NDCToLocationMapper:
         # Get operations and establishment info from SPL for the specific NDC
         _, _, establishments_info = self.extract_establishments_with_fei(product_info.spl_id, product_info.ndc)
 
-        if not establishments_info:
-            # Try to find labeler info and create a labeler entry
-            labeler_info = self.find_labeler_info_in_spl(product_info.spl_id, product_info.labeler_name)
-            if labeler_info:
-                establishments.append(labeler_info)
-        else:
+        if establishments_info:
             # Use the establishments found in SPL with their specific operations
             establishments = establishments_info
 
@@ -1269,37 +1279,11 @@ class NDCToLocationMapper:
                         'match_type': 'LABELER'
                     }
             
-            # Fallback: Return basic labeler info with the actual name from SPL
-            return {
-                'establishment_name': labeler_name,
-                'firm_name': labeler_name,
-                'address_line_1': 'Address not available in official documentation',
-                'city': 'Unknown',
-                'state_province': 'Unknown',
-                'country': 'Unknown',
-                'postal_code': '',
-                'latitude': None,
-                'longitude': None,
-                'search_method': 'labeler_name_from_spl',
-                'duns_number': labeler_duns,
-                'match_type': 'LABELER'
-            }
+            # REMOVED: Don't return labeler-only info as an establishment
+            return None
                 
         except Exception as e:
-            # Final fallback: Return basic labeler info
-            return {
-                'establishment_name': labeler_name,
-                'firm_name': labeler_name,
-                'address_line_1': 'Address not available',
-                'city': 'Unknown',
-                'state_province': 'Unknown',
-                'country': 'Unknown',
-                'postal_code': '',
-                'latitude': None,
-                'longitude': None,
-                'search_method': 'labeler_name_only',
-                'match_type': 'LABELER'
-            }
+            return None
 
     def process_single_ndc(self, ndc: str) -> pd.DataFrame:
         """Process a single NDC number"""
@@ -1341,6 +1325,7 @@ class NDCToLocationMapper:
                     'xml_context': establishment.get('xml_context', '')
                 })
         else:
+            # FIXED: Show that no manufacturing establishments were identified
             results.append({
                 'ndc': ndc,
                 'product_name': product_info.product_name,
@@ -1366,59 +1351,6 @@ class NDCToLocationMapper:
             })
 
         return pd.DataFrame(results)
-
-def generate_multi_location_google_maps_link(results_df: pd.DataFrame) -> str:
-    """Generate Google Maps link with multiple location pins"""
-    try:
-        # Get all valid addresses
-        locations = []
-        for _, row in results_df.iterrows():
-            if (row['address_line_1'] and 
-                'not available' not in str(row['address_line_1']).lower() and 
-                row['address_line_1'] != 'Unknown' and
-                row['city'] != 'Unknown'):
-                
-                address_parts = []
-                if row['establishment_name'] and row['establishment_name'] != 'Unknown':
-                    address_parts.append(row['establishment_name'])
-                if row['address_line_1'] != 'Unknown':
-                    address_parts.append(row['address_line_1'])
-                if row['city'] != 'Unknown':
-                    address_parts.append(row['city'])
-                if row['state'] != 'Unknown':
-                    address_parts.append(row['state'])
-                if row['country'] != 'Unknown':
-                    address_parts.append(row['country'])
-                
-                if address_parts:
-                    full_address = ', '.join(address_parts)
-                    locations.append(full_address)
-        
-        if not locations:
-            return None
-        
-        # Create multi-location Google Maps URL
-        if len(locations) == 1:
-            # Single location
-            encoded_address = locations[0].replace(' ', '+').replace(',', '%2C').replace('&', '%26')
-            return f"https://www.google.com/maps/search/{encoded_address}"
-        else:
-            # Multiple locations - use Google Maps directions with waypoints
-            origin = locations[0]
-            destination = locations[-1]
-            waypoints = locations[1:-1] if len(locations) > 2 else []
-            
-            origin_encoded = origin.replace(' ', '+').replace(',', '%2C').replace('&', '%26')
-            dest_encoded = destination.replace(' ', '+').replace(',', '%2C').replace('&', '%26')
-            
-            if waypoints:
-                waypoints_encoded = '|'.join([wp.replace(' ', '+').replace(',', '%2C').replace('&', '%26') for wp in waypoints])
-                return f"https://www.google.com/maps/dir/{origin_encoded}/{waypoints_encoded}/{dest_encoded}"
-            else:
-                return f"https://www.google.com/maps/dir/{origin_encoded}/{dest_encoded}"
-                
-    except Exception as e:
-        return None
 
 def generate_individual_google_maps_link(row) -> str:
     """Generate Google Maps link for a single establishment location"""
@@ -1500,7 +1432,7 @@ def main():
     # Information links
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("📖 [How to find your medication's National Drug Code](https://www.fda.gov/drugs/drug-approvals-and-databases/national-drug-code-directory)")
+        st.markdown("📖 [How to find your medication's National Drug Code](https://dailymed.nlm.nih.gov/dailymed/help.cfm)")
     with col2:
         st.markdown("📋 [Understanding manufacturing operations](https://www.fda.gov/drugs/pharmaceutical-quality-resources/pharmaceutical-quality-resources)")
     
@@ -1514,7 +1446,8 @@ def main():
                     first_row = results_df.iloc[0]
                     
                     if first_row['search_method'] == 'no_establishments_found':
-                        st.warning(f"⚠️ Found product information but no manufacturing establishments detected")
+                        # FIXED: Show proper message for no manufacturing establishments
+                        st.warning(f"⚠️ No manufacturing establishments were identified in the structured product label")
                         
                         # Product name on its own line
                         st.markdown(f"**📦 Product:**")
@@ -1555,11 +1488,6 @@ def main():
                             country_counts = results_df['country'].value_counts()
                             country_summary = ", ".join([f"{country}: {count}" for country, count in country_counts.items()])
                             st.markdown(f"🌍 **Manufacturing Countries:** {country_summary}")
-                        
-                        # Multi-location Google Maps link
-                        multi_maps_link = generate_multi_location_google_maps_link(results_df)
-                        if multi_maps_link:
-                            st.markdown(f"🗺️ **[View all locations on Google Maps]({multi_maps_link})**")
                         
                         # Manufacturing establishments
                         st.subheader(f"🏭 Manufacturing Establishments ({len(results_df)})")
