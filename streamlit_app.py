@@ -308,20 +308,56 @@ class NDCToLocationMapper:
         
         return clean_ndc
 
-    def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
-        """SIMPLE: Just try the standard format that was working + original"""
-        # Get the standard normalized format
-        normalized = self.normalize_ndc(ndc)
+def normalize_ndc_for_matching(self, ndc: str) -> List[str]:
+    """Generate NDC variants for DailyMed API matching"""
+    clean_ndc = re.sub(r'[^\d\-]', '', str(ndc))
+    variants = set()
+    
+    # Add original format
+    variants.add(clean_ndc.strip())
+    
+    # Remove dashes to get base digits
+    digits_only = clean_ndc.replace('-', '')
+    variants.add(digits_only)
+    
+    # Handle different length formats
+    if len(digits_only) == 10:
+        # Try as 5-3-2 and 4-4-2
+        variants.add(f"{digits_only[:5]}-{digits_only[5:8]}-{digits_only[8:]}")
+        variants.add(f"{digits_only[:4]}-{digits_only[4:8]}-{digits_only[8:]}")
         
-        # Return both the original and normalized
-        variants = [
-            ndc.strip(),
-            normalized,
-            normalized.replace('-', '')
-        ]
+        # Also try with leading zero (11 digits)
+        padded = '0' + digits_only
+        variants.add(f"{padded[:5]}-{padded[5:9]}-{padded[9:]}")
+        variants.add(padded)
         
-        # Remove duplicates and empty strings
-        return list(dict.fromkeys([v for v in variants if v]))
+    elif len(digits_only) == 11:
+        # Try as 5-4-2
+        variants.add(f"{digits_only[:5]}-{digits_only[5:9]}-{digits_only[9:]}")
+        
+        # Also try removing leading zero
+        if digits_only.startswith('0'):
+            trimmed = digits_only[1:]
+            variants.add(f"{trimmed[:4]}-{trimmed[4:8]}-{trimmed[8:]}")
+            variants.add(trimmed)
+            
+    elif len(digits_only) == 9:
+        # Try as 4-3-2 and pad to 10/11
+        variants.add(f"{digits_only[:4]}-{digits_only[4:7]}-{digits_only[7:]}")
+        
+        # Pad with zeros
+        for padding in ['0', '00']:
+            padded = padding + digits_only
+            if len(padded) == 10:
+                variants.add(f"{padded[:4]}-{padded[4:8]}-{padded[8:]}")
+                variants.add(f"{padded[:5]}-{padded[5:8]}-{padded[8:]}")
+            elif len(padded) == 11:
+                variants.add(f"{padded[:5]}-{padded[5:9]}-{padded[9:]}")
+            variants.add(padded)
+    
+    # Remove empty strings and return unique list
+    final_variants = [v for v in variants if v and len(v) >= 8]
+    return list(set(final_variants))
 
     def extract_labeler_from_product_name(self, product_name: str) -> str:
         """Extract labeler name from product name when it's in brackets"""
