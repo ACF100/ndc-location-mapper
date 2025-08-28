@@ -1462,9 +1462,7 @@ def main():
         st.error("❌ Could not load establishment database")
         st.stop()
     
-    # Input section with Enter key functionality
-    st.markdown("---")
-    
+    # Input section with Enter key functionality - no horizontal line
     # Use form to enable Enter key submission
     with st.form("ndc_search_form"):
         col1, col2 = st.columns([3, 1])
@@ -1478,9 +1476,8 @@ def main():
             st.write("")  # Spacing
             search_btn = st.form_submit_button("🔍 Search", type="primary")
     
-    # Single example NDC - less prominent
-    st.markdown("**Try this example:** `0185-0674-01`")
-    if st.button("Try example", key="example_btn"):
+    # Try example button with NDC next to it
+    if st.button("Try Example: 0185-0674-01", key="example_btn"):
         ndc_input = "0185-0674-01"
         search_btn = True
     
@@ -1504,19 +1501,17 @@ def main():
                         # FIXED: Show proper message for no manufacturing establishments
                         st.warning(f"⚠️ No manufacturing establishments were identified in the structured product label")
                         
-                        # Product name on its own line
-                        st.markdown(f"**📦 Product:**")
-                        st.markdown(f"{first_row['product_name']}")
+                        # Product and Labeler with same font size
+                        st.markdown(f"**Product:** {first_row['product_name']}")
+                        st.markdown(f"**Labeler:** {first_row['labeler_name']}")
                         
                         col1, col2 = st.columns(2)
                         with col1:
                             st.metric("National Drug Code", first_row['ndc'])
                         with col2:
-                            st.metric("Labeler", first_row['labeler_name'])
-                            
-                        if first_row['spl_id']:
-                            spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                            st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
+                            if first_row['spl_id']:
+                                spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
+                                st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
                         
                         st.info("💡 This product may not have detailed establishment information in its official documentation (~70% of products don't include manufacturing details), or the establishments may not be in our database.")
                     
@@ -1524,36 +1519,26 @@ def main():
                         # Full results with establishments
                         st.success(f"✅ Found {len(results_df)} manufacturing establishments")
                         
-                        # Product name on its own line
-                        st.markdown(f"**📦 Product:**")
-                        st.markdown(f"{first_row['product_name']}")
+                        # Product and Labeler with same font size
+                        st.markdown(f"**Product:** {first_row['product_name']}")
+                        st.markdown(f"**Labeler:** {first_row['labeler_name']}")
                         
                         col1, col2 = st.columns(2)
                         with col1:
                             st.metric("National Drug Code", first_row['ndc'])
                         with col2:
-                            st.metric("Labeler", first_row['labeler_name'])
-                            
-                        if first_row['spl_id']:
-                            spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                            st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
+                            if first_row['spl_id']:
+                                spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
+                                st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
                         
-                        # Manufacturing countries - more prominent
-                        if len(results_df) > 1:
-                            country_counts = results_df['country'].value_counts()
-                            st.subheader("🌍 Manufacturing Countries")
-                            
-                            # Create a more prominent display for countries
-                            country_cols = st.columns(min(len(country_counts), 4))  # Max 4 columns
-                            for i, (country, count) in enumerate(country_counts.items()):
-                                with country_cols[i % 4]:
-                                    st.metric(country, f"{count} facilities")
+                        # Manufacturing establishments header with countries
+                        country_counts = results_df['country'].value_counts()
+                        country_summary = ", ".join([f"{country}: {count}" for country, count in country_counts.items()])
+                        st.subheader(f"🏭 Manufacturing Establishments ({len(results_df)}) - {country_summary}")
                         
-                        # Manufacturing establishments
-                        st.subheader(f"🏭 Manufacturing Establishments ({len(results_df)})")
-                        
+                        # Manufacturing establishments - header without partial address
                         for idx, row in results_df.iterrows():
-                            # Use just establishment name without address in header
+                            # Use just establishment name in header
                             with st.expander(f"Establishment {idx + 1}: {row['establishment_name']}", expanded=True):
                                 col1, col2 = st.columns(2)
                                 
@@ -1582,9 +1567,7 @@ def main():
                                 else:
                                     st.write("**📍 Address:** Address not available")
                         
-                        # CSV Download option (replacing summary table)
-                        st.subheader("📊 Download Data")
-                        
+                        # CSV Download option (no header, just button)
                         # Prepare clean CSV data
                         csv_data = results_df.copy()
                         csv_data['full_address'] = csv_data.apply(generate_full_address, axis=1)
@@ -1640,6 +1623,11 @@ def main():
         st.sidebar.markdown("---")
         st.sidebar.metric("FDA Database Entries", f"{len(st.session_state.mapper.fei_database):,}")
         st.sidebar.metric("Business Database Entries", f"{len(st.session_state.mapper.duns_database):,}")
+        
+        # Add database date if available
+        if st.session_state.mapper.database_date:
+            st.sidebar.markdown(f"**Database Date:** {st.session_state.mapper.database_date}")
+        
         st.sidebar.markdown("---")
         st.sidebar.markdown("**Database Status:**")
         st.sidebar.success("✅ Loaded and Ready")
