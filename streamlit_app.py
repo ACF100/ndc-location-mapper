@@ -64,7 +64,6 @@ class NDCToLocationMapper:
             # Try local files first
             for file_path in possible_files:
                 if os.path.exists(file_path):
-                    st.info(f"📂 Loading establishment database from repository...")
                     self.load_fei_database_from_spreadsheet(file_path)
                     if self.fei_database or self.duns_database:
                         self.database_loaded = True
@@ -72,7 +71,6 @@ class NDCToLocationMapper:
             
             # If no local file found, show error
             st.error("❌ Could not load establishment database from any source")
-            st.info("💡 Please ensure drls_reg.xlsx is available in the repository")
             
         except Exception as e:
             st.error(f"❌ Error during database loading: {str(e)}")
@@ -461,6 +459,36 @@ class NDCToLocationMapper:
         # Convert to list and remove empty strings
         return [v for v in all_variants if v and len(v) >= 6]
 
+    def extract_labeler_from_product_name(self, product_name: str) -> str:
+        """Extract labeler name from product name - enhanced extraction"""
+        try:
+            # Method 1: Look for text in brackets at the end
+            bracket_match = re.search(r'\[([^\]]+)\]\s*$', product_name)
+            if bracket_match:
+                labeler = bracket_match.group(1).strip()
+                if labeler and labeler.lower() not in ['unknown', 'n/a', 'none']:
+                    return labeler
+            
+            # Method 2: Look for any brackets in the product name
+            all_brackets = re.findall(r'\[([^\]]+)\]', product_name)
+            if all_brackets:
+                # Take the last bracketed text (usually the manufacturer)
+                labeler = all_brackets[-1].strip()
+                if labeler and labeler.lower() not in ['unknown', 'n/a', 'none']:
+                    return labeler
+            
+            # Method 3: Look for text after "by" or "from"
+            by_match = re.search(r'\b(?:by|from)\s+([^,\[\]]+)', product_name, re.IGNORECASE)
+            if by_match:
+                labeler = by_match.group(1).strip()
+                if labeler and labeler.lower() not in ['unknown', 'n/a', 'none']:
+                    return labeler
+            
+            return 'Not specified'
+            
+        except Exception as e:
+            return 'Not specified'
+
     def get_ndc_info_comprehensive(self, ndc: str) -> Optional[ProductInfo]:
         """Get NDC info from multiple sources"""
         # Try DailyMed first
@@ -476,7 +504,7 @@ class NDCToLocationMapper:
         return None
 
     def get_ndc_info_from_dailymed(self, ndc: str) -> Optional[ProductInfo]:
-        """Get NDC info from DailyMed - try more variants"""
+        """Get NDC info from DailyMed with improved labeler extraction"""
         try:
             # Generate comprehensive list of NDC variants
             ndc_variants = self.normalize_ndc_for_matching(ndc)
@@ -507,10 +535,34 @@ class NDCToLocationMapper:
                         data = response.json()
                         if data.get('data'):
                             spl_data = data['data'][0]
+                            product_name = spl_data.get('title', 'Unknown')
+                            
+                            # Try multiple methods to get labeler
+                            labeler_name = None
+                            
+                            # Method 1: From API labeler field
+                            api_labeler = spl_data.get('labeler', '').strip()
+                            if api_labeler and api_labeler not in ['Unknown', '', 'None']:
+                                labeler_name = api_labeler
+                            
+                            # Method 2: Extract from product name
+                            if not labeler_name:
+                                labeler_name = self.extract_labeler_from_product_name(product_name)
+                            
+                            # Method 3: Try to get from SPL XML directly
+                            if labeler_name in ['Not specified', 'Unknown', ''] and spl_data.get('setid'):
+                                spl_labeler, _ = self.extract_labeler_from_spl(spl_data.get('setid'))
+                                if spl_labeler and spl_labeler != 'Unknown':
+                                    labeler_name = spl_labeler
+                            
+                            # Final fallback
+                            if not labeler_name or labeler_name in ['Unknown', 'Not specified', '']:
+                                labeler_name = 'Manufacturer name not available'
+                            
                             return ProductInfo(
                                 ndc=ndc,  # Return original NDC as entered
-                                product_name=spl_data.get('title', 'Unknown'),
-                                labeler_name=spl_data.get('labeler', 'Unknown'),
+                                product_name=product_name,
+                                labeler_name=labeler_name,
                                 spl_id=spl_data.get('setid')
                             )
                 except Exception as e:
@@ -903,7 +955,7 @@ class NDCToLocationMapper:
                 # If our target NDC was found in this operation, add it
                 if ndc_found_in_operation and operation_found not in operations:
                     operations.append(operation_found)
-                    quotes.append(f'"Found {operation_found} operation for NDC {target_ndc} in {establishment_name}"')
+                    quotes.append(f'"Found {operation_found} operation for National Drug Code {target_ndc} in {establishment_name}"')
 
         # Remove "Manufacture" if "API Manufacture" is present
         if 'API Manufacture' in operations and 'Manufacture' in operations:
@@ -1043,7 +1095,7 @@ class NDCToLocationMapper:
                                     general_ops, general_quotes = self.extract_general_operations(section, section_establishment_name)
                                     if general_ops:
                                         establishment_operations.extend(general_ops)
-                                        establishment_quotes.extend([f"General operation (not NDC-specific): {q}" for q in general_quotes])
+                                        establishment_quotes.extend([f"General operation (not National Drug Code-specific): {q}" for q in general_quotes])
                                         establishment_included = True
                             
                             # Only process the FIRST matching section to avoid duplicates
@@ -1221,7 +1273,7 @@ class NDCToLocationMapper:
             return {
                 'establishment_name': labeler_name,
                 'firm_name': labeler_name,
-                'address_line_1': 'Address not available in SPL',
+                'address_line_1': 'Address not available in official documentation',
                 'city': 'Unknown',
                 'state_province': 'Unknown',
                 'country': 'Unknown',
@@ -1281,7 +1333,7 @@ class NDCToLocationMapper:
                     'postal_code': establishment.get('postal_code', ''),
                     'latitude': establishment.get('latitude'),
                     'longitude': establishment.get('longitude'),
-                    'spl_operations': ', '.join(establishment.get('operations', [])) if establishment.get('operations') else 'None found for this NDC',
+                    'spl_operations': ', '.join(establishment.get('operations', [])) if establishment.get('operations') else 'None found for this National Drug Code',
                     'spl_quotes': ' | '.join(establishment.get('quotes', [])),
                     'search_method': establishment.get('search_method'),
                     'xml_location': establishment.get('xml_location', 'Unknown'),
@@ -1314,6 +1366,59 @@ class NDCToLocationMapper:
             })
 
         return pd.DataFrame(results)
+
+def generate_multi_location_google_maps_link(results_df: pd.DataFrame) -> str:
+    """Generate Google Maps link with multiple location pins"""
+    try:
+        # Get all valid addresses
+        locations = []
+        for _, row in results_df.iterrows():
+            if (row['address_line_1'] and 
+                'not available' not in str(row['address_line_1']).lower() and 
+                row['address_line_1'] != 'Unknown' and
+                row['city'] != 'Unknown'):
+                
+                address_parts = []
+                if row['establishment_name'] and row['establishment_name'] != 'Unknown':
+                    address_parts.append(row['establishment_name'])
+                if row['address_line_1'] != 'Unknown':
+                    address_parts.append(row['address_line_1'])
+                if row['city'] != 'Unknown':
+                    address_parts.append(row['city'])
+                if row['state'] != 'Unknown':
+                    address_parts.append(row['state'])
+                if row['country'] != 'Unknown':
+                    address_parts.append(row['country'])
+                
+                if address_parts:
+                    full_address = ', '.join(address_parts)
+                    locations.append(full_address)
+        
+        if not locations:
+            return None
+        
+        # Create multi-location Google Maps URL
+        if len(locations) == 1:
+            # Single location
+            encoded_address = locations[0].replace(' ', '+').replace(',', '%2C').replace('&', '%26')
+            return f"https://www.google.com/maps/search/{encoded_address}"
+        else:
+            # Multiple locations - use Google Maps directions with waypoints
+            origin = locations[0]
+            destination = locations[-1]
+            waypoints = locations[1:-1] if len(locations) > 2 else []
+            
+            origin_encoded = origin.replace(' ', '+').replace(',', '%2C').replace('&', '%26')
+            dest_encoded = destination.replace(' ', '+').replace(',', '%2C').replace('&', '%26')
+            
+            if waypoints:
+                waypoints_encoded = '|'.join([wp.replace(' ', '+').replace(',', '%2C').replace('&', '%26') for wp in waypoints])
+                return f"https://www.google.com/maps/dir/{origin_encoded}/{waypoints_encoded}/{dest_encoded}"
+            else:
+                return f"https://www.google.com/maps/dir/{origin_encoded}/{dest_encoded}"
+                
+    except Exception as e:
+        return None
 
 def generate_individual_google_maps_link(row) -> str:
     """Generate Google Maps link for a single establishment location"""
@@ -1349,48 +1454,38 @@ def generate_individual_google_maps_link(row) -> str:
 
 def main():
     st.set_page_config(
-        page_title="NDC Manufacturing Location Lookup", 
+        page_title="Medication Manufacturing Location Lookup", 
         page_icon="💊",
         layout="wide"
     )
     
-    st.title("💊 NDC Manufacturing Location Lookup")
+    st.title("💊 Medication Manufacturing Location Lookup")
     st.markdown("### Find where your medications are manufactured")
-    st.markdown("Enter an NDC number to discover manufacturing establishments, locations, and operations using FDA data.")
+    st.markdown("Enter a National Drug Code number to discover manufacturing establishments, locations, and operations using FDA data.")
     
-    # Auto-load database and show status
+    # Auto-load database and show status (simplified)
     if 'mapper' not in st.session_state:
-        with st.spinner("🔄 Loading FDA establishment database..."):
-            st.session_state.mapper = NDCToLocationMapper()
+        st.session_state.mapper = NDCToLocationMapper()
             
-        if st.session_state.mapper.database_loaded:
-            st.success(f"✅ Database loaded successfully!")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("FEI Database Entries", f"{len(st.session_state.mapper.fei_database):,}")
-            with col2:
-                st.metric("DUNS Database Entries", f"{len(st.session_state.mapper.duns_database):,}")
-            with col3:
-                current_date = datetime.now().strftime("%Y-%m-%d")
-                st.metric("Database Updated", current_date)
-                
-        else:
-            st.error("❌ Could not load establishment database")
-            st.info("💡 Please ensure the database file is available in the repository or check GitHub connectivity")
-            st.stop()
+    if not st.session_state.mapper.database_loaded:
+        st.error("❌ Could not load establishment database")
+        st.stop()
     
-    # NDC input section
+    # Input section with Enter key functionality
     st.markdown("---")
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        ndc_input = st.text_input(
-            "Enter NDC Number:", 
-            placeholder="0185-0674-01",
-            help="NDC format: 12345-678-90 or 1234567890"
-        )
-    with col2:
-        search_btn = st.button("🔍 Search", type="primary")
+    
+    # Use form to enable Enter key submission
+    with st.form("ndc_search_form"):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            ndc_input = st.text_input(
+                "Enter National Drug Code Number:", 
+                placeholder="Example: 0185-0674-01",
+                help="National Drug Code format: 12345-678-90 or 1234567890"
+            )
+        with col2:
+            st.write("")  # Spacing
+            search_btn = st.form_submit_button("🔍 Search", type="primary")
     
     # Example NDCs
     st.markdown("**Try these examples:**")
@@ -1402,6 +1497,13 @@ def main():
                 ndc_input = ex
                 search_btn = True
     
+    # Information links
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("📖 [How to find your medication's National Drug Code](https://www.fda.gov/drugs/drug-approvals-and-databases/national-drug-code-directory)")
+    with col2:
+        st.markdown("📋 [Understanding manufacturing operations](https://www.fda.gov/drugs/pharmaceutical-quality-resources/pharmaceutical-quality-resources)")
+    
     # Search functionality
     if search_btn and ndc_input:
         with st.spinner(f"Looking up manufacturing locations for {ndc_input}..."):
@@ -1412,44 +1514,52 @@ def main():
                     first_row = results_df.iloc[0]
                     
                     if first_row['search_method'] == 'no_establishments_found':
-                        st.warning(f"⚠️ Found product information for NDC {ndc_input}, but no manufacturing establishments detected")
+                        st.warning(f"⚠️ Found product information but no manufacturing establishments detected")
+                        
+                        # Product name on its own line
+                        st.markdown(f"**📦 Product:**")
+                        st.markdown(f"{first_row['product_name']}")
                         
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.metric("Product Name", first_row['product_name'])
-                            st.metric("NDC Number", first_row['ndc'])
+                            st.metric("National Drug Code", first_row['ndc'])
                         with col2:
-                            labeler = first_row['labeler_name'] if first_row['labeler_name'] != 'Unknown' else 'Not specified'
-                            st.metric("Labeler", labeler)
+                            st.metric("Manufacturer/Labeler", first_row['labeler_name'])
                             
-                            if first_row['spl_id']:
-                                spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                                st.markdown(f"📄 **SPL Document:** [View on DailyMed]({spl_url})")
+                        if first_row['spl_id']:
+                            spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
+                            st.markdown(f"📄 **Official Product Document:** [View on DailyMed]({spl_url})")
                         
-                        st.info("💡 This product may not have detailed establishment information in its SPL document, or the establishments may not be in the database.")
+                        st.info("💡 This product may not have detailed establishment information in its official documentation (~70% of products don't include manufacturing details), or the establishments may not be in our database.")
                     
                     else:
                         # Full results with establishments
-                        st.success(f"✅ Found {len(results_df)} manufacturing establishments for NDC: {ndc_input}")
+                        st.success(f"✅ Found {len(results_df)} manufacturing establishments")
+                        
+                        # Product name on its own line
+                        st.markdown(f"**📦 Product:**")
+                        st.markdown(f"{first_row['product_name']}")
                         
                         col1, col2 = st.columns(2)
                         with col1:
-                            st.metric("Product Name", first_row['product_name'])
-                            st.metric("NDC Number", first_row['ndc'])
-                        
+                            st.metric("National Drug Code", first_row['ndc'])
                         with col2:
-                            labeler = first_row['labeler_name'] if first_row['labeler_name'] != 'Unknown' else 'Not specified'
-                            st.metric("Labeler", labeler)
+                            st.metric("Manufacturer/Labeler", first_row['labeler_name'])
                             
-                            if first_row['spl_id']:
-                                spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                                st.markdown(f"📄 **SPL Document:** [View on DailyMed]({spl_url})")
+                        if first_row['spl_id']:
+                            spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
+                            st.markdown(f"📄 **Official Product Document:** [View on DailyMed]({spl_url})")
                         
                         # Country distribution
                         if len(results_df) > 1:
                             country_counts = results_df['country'].value_counts()
                             country_summary = ", ".join([f"{country}: {count}" for country, count in country_counts.items()])
-                            st.markdown(f"🌍 **Country Distribution:** {country_summary}")
+                            st.markdown(f"🌍 **Manufacturing Countries:** {country_summary}")
+                        
+                        # Multi-location Google Maps link
+                        multi_maps_link = generate_multi_location_google_maps_link(results_df)
+                        if multi_maps_link:
+                            st.markdown(f"🗺️ **[View all locations on Google Maps]({multi_maps_link})**")
                         
                         # Manufacturing establishments
                         st.subheader(f"🏭 Manufacturing Establishments ({len(results_df)})")
@@ -1460,17 +1570,17 @@ def main():
                                 
                                 with col1:
                                     if row['fei_number']:
-                                        st.write(f"**🔢 FEI Number:** {row['fei_number']}")
+                                        st.write(f"**🔢 FDA Establishment Identifier:** {row['fei_number']}")
                                     if row['duns_number']:
-                                        st.write(f"**🔢 DUNS Number:** {row['duns_number']}")
+                                        st.write(f"**🔢 Business Identifier:** {row['duns_number']}")
                                     if row['firm_name'] and row['firm_name'] != 'Unknown':
-                                        st.write(f"**🏢 Firm Name:** {row['firm_name']}")
+                                        st.write(f"**🏢 Company Name:** {row['firm_name']}")
                                 
                                 with col2:
                                     if row['country'] and row['country'] != 'Unknown':
                                         st.write(f"**🌍 Country:** {row['country']}")
-                                    if row['spl_operations'] and row['spl_operations'] != 'None found for this NDC':
-                                        st.write(f"**⚙️ Operations:** {row['spl_operations']}")
+                                    if row['spl_operations'] and row['spl_operations'] != 'None found for this National Drug Code':
+                                        st.write(f"**⚙️ Manufacturing Operations:** {row['spl_operations']}")
                                 
                                 # Address
                                 if row['address_line_1'] and 'not available' not in str(row['address_line_1']).lower() and row['address_line_1'] != 'Unknown':
@@ -1505,42 +1615,50 @@ def main():
                         st.dataframe(results_df[display_cols], use_container_width=True)
                         
                 else:
-                    st.error(f"❌ No results found for NDC: {ndc_input}")
-                    st.info("💡 This NDC may not exist in DailyMed database. Try checking the NDC format.")
+                    st.error(f"❌ No results found for: {ndc_input}")
+                    st.info("💡 This National Drug Code may not exist in the FDA database. Please check the format and try again.")
                     
             except Exception as e:
-                st.error(f"❌ Error processing NDC: {str(e)}")
-                with st.expander("Debug Information"):
+                st.error(f"❌ Error processing request: {str(e)}")
+                with st.expander("Technical Details"):
                     st.exception(e)
     
     # Sidebar info
     st.sidebar.title("About This Tool")
     st.sidebar.markdown("""
-    This tool finds manufacturing establishments for NDC numbers by:
+    This tool helps you find where your medications are manufactured by:
     
-    🔍 **Looking up the drug** in FDA databases  
-    📄 **Analyzing SPL documents** for establishment info  
-    🏭 **Matching FEI/DUNS numbers** to locations  
-    🌍 **Showing global manufacturing** network  
+    🔍 **Looking up your medication** in FDA databases  
+    📄 **Analyzing official documents** for manufacturing info  
+    🏭 **Finding manufacturing facilities** worldwide  
+    🌍 **Showing locations** on interactive maps  
     
-    **Features:**
-    - ✅ Automatic database loading
-    - ✅ Improved NDC format matching
-    - ✅ Handles all NDC formats (4-4-2, 5-3-2, 5-4-2)
-    - ✅ Enhanced labeler extraction
-    - ✅ XML-based establishment parsing
+    **What you can discover:**
+    - ✅ Where your medication is made
+    - ✅ What company manufactures it  
+    - ✅ Manufacturing operations performed
+    - ✅ Global supply chain information
+    - ✅ Interactive maps of facilities
+    
+    **Coverage:**
+    Approximately 30% of medications have detailed manufacturing establishment information available in their official FDA documentation.
     """)
     
     if 'mapper' in st.session_state and st.session_state.mapper.database_loaded:
         st.sidebar.markdown("---")
-        st.sidebar.metric("FEI Database Entries", f"{len(st.session_state.mapper.fei_database):,}")
-        st.sidebar.metric("DUNS Database Entries", f"{len(st.session_state.mapper.duns_database):,}")
+        st.sidebar.metric("FDA Database Entries", f"{len(st.session_state.mapper.fei_database):,}")
+        st.sidebar.metric("Business Database Entries", f"{len(st.session_state.mapper.duns_database):,}")
         st.sidebar.markdown("---")
         st.sidebar.markdown("**Database Status:**")
         st.sidebar.success("✅ Loaded and Ready")
     
     st.sidebar.markdown("---")
-    st.sidebar.markdown("**Disclaimer:** For informational purposes only.")
+    st.sidebar.markdown("**⚠️ Important Disclaimer:**")
+    st.sidebar.markdown("""
+    This tool is provided for **informational and educational purposes only**. 
+    
+    - Information may not be complete or current
+    - Not intended for medical decision-making
+    - Does not replace consultation with healthcare providers
+    - Manufacturing
 
-if __name__ == "__main__":
-    main()
