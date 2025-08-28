@@ -1660,5 +1660,11 @@ def main():
     - Information may not be complete or current
     - Not intended for medical decision-making
     - Does not replace consultation with healthcare providers
-    - Manufacturing
+    - Manufacturing locations may change over time
+    - Always consult your pharmacist or doctor for medication questions
+    
+    Data sources: FDA databases, official product labeling, and establishment registrations.
+    """)
 
+if __name__ == "__main__":
+    main()
