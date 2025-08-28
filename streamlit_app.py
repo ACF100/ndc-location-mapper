@@ -46,6 +46,7 @@ class NDCToLocationMapper:
         self.fei_database = {}
         self.duns_database = {}
         self.database_loaded = False
+        self.database_date = None  # Track when database was created
         
         # Auto-load database
         self.load_database_automatically()
@@ -67,6 +68,12 @@ class NDCToLocationMapper:
                     self.load_fei_database_from_spreadsheet(file_path)
                     if self.fei_database or self.duns_database:
                         self.database_loaded = True
+                        # Get file modification date
+                        try:
+                            mod_time = os.path.getmtime(file_path)
+                            self.database_date = datetime.fromtimestamp(mod_time).strftime("%Y-%m-%d")
+                        except:
+                            self.database_date = "Unknown"
                         return
             
             # If no local file found, show error
@@ -598,7 +605,7 @@ class NDCToLocationMapper:
                             
                             # Final fallback
                             if not labeler_name or labeler_name in ['Unknown', 'Not specified', '']:
-                                labeler_name = 'Manufacturer name not available'
+                                labeler_name = 'Labeler name not available'
                             
                             return ProductInfo(
                                 ndc=ndc,  # Return original NDC as entered
@@ -1417,6 +1424,25 @@ def generate_individual_google_maps_link(row) -> str:
     encoded_address = full_address.replace(' ', '+').replace(',', '%2C').replace('&', '%26')
     return f"https://www.google.com/maps/search/{encoded_address}"
 
+def generate_full_address(row) -> str:
+    """Generate full address string for an establishment"""
+    address_parts = []
+    
+    if row['establishment_name'] and row['establishment_name'] != 'Unknown':
+        address_parts.append(row['establishment_name'])
+    if row['address_line_1'] and row['address_line_1'] != 'Unknown':
+        address_parts.append(row['address_line_1'])
+    if row['city'] and row['city'] != 'Unknown':
+        address_parts.append(row['city'])
+    if row['state'] and row['state'] != 'Unknown':
+        address_parts.append(row['state'])
+    if row['postal_code']:
+        address_parts.append(row['postal_code'])
+    if row['country'] and row['country'] != 'Unknown':
+        address_parts.append(row['country'])
+    
+    return ', '.join(address_parts) if address_parts else 'Address not available'
+
 def main():
     st.set_page_config(
         page_title="Medication Manufacturing Location Lookup", 
@@ -1452,17 +1478,13 @@ def main():
             st.write("")  # Spacing
             search_btn = st.form_submit_button("🔍 Search", type="primary")
     
-    # Example NDCs
-    st.markdown("**Try these examples:**")
-    examples = ["0185-0674-01", "50242-061-10", "63323-262-06", "63323-459-14"]
-    cols = st.columns(len(examples))
-    for i, ex in enumerate(examples):
-        with cols[i]:
-            if st.button(f"`{ex}`", key=f"ex_{i}"):
-                ndc_input = ex
-                search_btn = True
+    # Single example NDC - less prominent
+    st.markdown("**Try this example:** `0185-0674-01`")
+    if st.button("Try example", key="example_btn"):
+        ndc_input = "0185-0674-01"
+        search_btn = True
     
-    # Information links - REMOVED manufacturing operations link
+    # Information links
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("📖 [How to find your medication's National Drug Code](https://dailymed.nlm.nih.gov/dailymed/help.cfm)")
@@ -1490,11 +1512,11 @@ def main():
                         with col1:
                             st.metric("National Drug Code", first_row['ndc'])
                         with col2:
-                            st.metric("Manufacturer/Labeler", first_row['labeler_name'])
+                            st.metric("Labeler", first_row['labeler_name'])
                             
                         if first_row['spl_id']:
                             spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                            st.markdown(f"📄 **Official Product Document:** [View on DailyMed]({spl_url})")
+                            st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
                         
                         st.info("💡 This product may not have detailed establishment information in its official documentation (~70% of products don't include manufacturing details), or the establishments may not be in our database.")
                     
@@ -1510,22 +1532,28 @@ def main():
                         with col1:
                             st.metric("National Drug Code", first_row['ndc'])
                         with col2:
-                            st.metric("Manufacturer/Labeler", first_row['labeler_name'])
+                            st.metric("Labeler", first_row['labeler_name'])
                             
                         if first_row['spl_id']:
                             spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                            st.markdown(f"📄 **Official Product Document:** [View on DailyMed]({spl_url})")
+                            st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
                         
-                        # Country distribution
+                        # Manufacturing countries - more prominent
                         if len(results_df) > 1:
                             country_counts = results_df['country'].value_counts()
-                            country_summary = ", ".join([f"{country}: {count}" for country, count in country_counts.items()])
-                            st.markdown(f"🌍 **Manufacturing Countries:** {country_summary}")
+                            st.subheader("🌍 Manufacturing Countries")
+                            
+                            # Create a more prominent display for countries
+                            country_cols = st.columns(min(len(country_counts), 4))  # Max 4 columns
+                            for i, (country, count) in enumerate(country_counts.items()):
+                                with country_cols[i % 4]:
+                                    st.metric(country, f"{count} facilities")
                         
                         # Manufacturing establishments
                         st.subheader(f"🏭 Manufacturing Establishments ({len(results_df)})")
                         
                         for idx, row in results_df.iterrows():
+                            # Use just establishment name without address in header
                             with st.expander(f"Establishment {idx + 1}: {row['establishment_name']}", expanded=True):
                                 col1, col2 = st.columns(2)
                                 
@@ -1543,37 +1571,40 @@ def main():
                                     if row['spl_operations'] and row['spl_operations'] != 'None found for this National Drug Code':
                                         st.write(f"**⚙️ Manufacturing Operations:** {row['spl_operations']}")
                                 
-                                # Address
-                                if row['address_line_1'] and 'not available' not in str(row['address_line_1']).lower() and row['address_line_1'] != 'Unknown':
-                                    address_parts = []
-                                    if row['address_line_1'] != 'Unknown':
-                                        address_parts.append(row['address_line_1'])
-                                    if row['city'] != 'Unknown':
-                                        address_parts.append(row['city'])
-                                    if row['state'] != 'Unknown':
-                                        address_parts.append(row['state'])
-                                    if row['postal_code']:
-                                        address_parts.append(row['postal_code'])
-                                    if row['country'] != 'Unknown':
-                                        address_parts.append(row['country'])
+                                # Full address in address section
+                                full_address = generate_full_address(row)
+                                if full_address != 'Address not available':
+                                    st.write(f"**📍 Address:** {full_address}")
                                     
-                                    if address_parts:
-                                        full_address = ', '.join(address_parts)
-                                        st.write(f"**📍 Address:** {full_address}")
-                                        
-                                        maps_link = generate_individual_google_maps_link(row)
-                                        if maps_link:
-                                            st.markdown(f"🗺️ [View on Google Maps]({maps_link})")
+                                    maps_link = generate_individual_google_maps_link(row)
+                                    if maps_link:
+                                        st.markdown(f"🗺️ [View on Google Maps]({maps_link})")
+                                else:
+                                    st.write("**📍 Address:** Address not available")
                         
-                        # Summary table
-                        st.subheader("📊 Summary Table")
-                        display_cols = ['establishment_name', 'firm_name', 'country', 'spl_operations']
+                        # CSV Download option (replacing summary table)
+                        st.subheader("📊 Download Data")
+                        
+                        # Prepare clean CSV data
+                        csv_data = results_df.copy()
+                        csv_data['full_address'] = csv_data.apply(generate_full_address, axis=1)
+                        
+                        # Select relevant columns for CSV
+                        csv_columns = ['ndc', 'product_name', 'labeler_name', 'establishment_name', 
+                                     'firm_name', 'full_address', 'country', 'spl_operations']
                         if any(results_df['fei_number'].notna()):
-                            display_cols.append('fei_number')
+                            csv_columns.append('fei_number')
                         if any(results_df['duns_number'].notna()):
-                            display_cols.append('duns_number')
+                            csv_columns.append('duns_number')
                         
-                        st.dataframe(results_df[display_cols], use_container_width=True)
+                        csv_export = csv_data[csv_columns].to_csv(index=False)
+                        
+                        st.download_button(
+                            label="📥 Download as CSV",
+                            data=csv_export,
+                            file_name=f"ndc_{ndc_input.replace('-', '')}_establishments.csv",
+                            mime="text/csv"
+                        )
                         
                 else:
                     st.error(f"❌ No results found for: {ndc_input}")
