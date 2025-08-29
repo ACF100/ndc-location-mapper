@@ -1452,7 +1452,7 @@ def main():
     
     st.title("💊 Medication Manufacturing Location Lookup")
     st.markdown("### Find where your medications are manufactured")
-    st.markdown("Enter a National Drug Code number to discover manufacturing establishments, locations, and operations using FDA data.")
+    st.markdown("Enter a National Drug Code (NDC) number to see if it has manufacturing establishments, locations, and operations in public FDA data.")
     
     # Auto-load database and show status (simplified)
     if 'mapper' not in st.session_state:
@@ -1468,7 +1468,7 @@ def main():
         col1, col2 = st.columns([3, 1])
         with col1:
             ndc_input = st.text_input(
-                "Enter National Drug Code Number:", 
+                "Enter NDC Number:", 
                 placeholder="Example: 0000-0000-00",
                 help="National Drug Code format: 12345-678-90 or 1234567890"
             )
@@ -1477,7 +1477,7 @@ def main():
             search_btn = st.form_submit_button("🔍 Search", type="primary")
     
     # Try A Random NDC button
-    if st.button("Try A Random NDC", key="random_ndc_btn"):
+    if st.button("Try An Example NDC", key="random_ndc_btn"):
         import random
         random_ndcs = [
             "50242-060-01",
@@ -1604,12 +1604,10 @@ def main():
     # Sidebar info
     st.sidebar.title("About This Tool")
     st.sidebar.markdown("""
-    This tool helps you find where your medications are manufactured by:
-    
-    🔍 **Looking up your medication** in FDA databases  
-    📄 **Analyzing official documents** for manufacturing info  
-    🏭 **Finding manufacturing facilities** worldwide  
-    🌍 **Showing locations** on interactive maps  
+    🔍 **Look up your medication** in public FDA databases  
+    📄 **Analyze official documents** for manufacturing info  
+    🏭 **Find manufacturing facilities** worldwide  
+    🌍 **Show locations** on maps  
     
     **What you can discover:**
     - ✅ Where your medication is made
@@ -1619,7 +1617,7 @@ def main():
     - ✅ Interactive maps of facilities
     
     **Coverage:**
-    Approximately 30% of medications have detailed manufacturing establishment information available in their official FDA documentation.
+    Approximately 30% of medications have some manufacturing establishment info in public FDA data.
     """)
     
     if 'mapper' in st.session_state and st.session_state.mapper.database_loaded:
