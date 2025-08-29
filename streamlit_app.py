@@ -1636,5 +1636,8 @@ def main():
     - Manufacturing locations may change over time
     - Always consult your pharmacist or doctor for medication questions
     
-    Data sources: FDA databases
+    Data sources: FDA databases, official product labeling, and establishment registrations.
+    """)
 
+if __name__ == "__main__":
+    main()
