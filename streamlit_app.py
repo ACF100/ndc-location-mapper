@@ -1469,16 +1469,28 @@ def main():
         with col1:
             ndc_input = st.text_input(
                 "Enter National Drug Code Number:", 
-                placeholder="Example: 0185-0674-01",
+                placeholder="Example: 0000-0000-00",
                 help="National Drug Code format: 12345-678-90 or 1234567890"
             )
         with col2:
             st.write("")  # Spacing
             search_btn = st.form_submit_button("🔍 Search", type="primary")
     
-    # Try example button with NDC next to it
-    if st.button("Try Example: 0185-0674-01", key="example_btn"):
-        ndc_input = "0185-0674-01"
+    # Try A Random NDC button
+    if st.button("Try A Random NDC", key="random_ndc_btn"):
+        import random
+        random_ndcs = [
+            "50242-060-01",
+            "0003-0893-91", 
+            "0169-4132-11",
+            "61755-005-54",
+            "0955-3900-01",
+            "0069-0043-02",
+            "50242-077-01",
+            "65628-206-05",
+            "57894-030-01"
+        ]
+        ndc_input = random.choice(random_ndcs)
         search_btn = True
     
     # Information link - removed "About FDA drug databases"
