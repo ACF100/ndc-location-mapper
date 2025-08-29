@@ -1498,9 +1498,9 @@ def main():
                         st.warning(f"⚠️ No manufacturing establishments were identified in the structured product label")
                         
                         # Product, Labeler, and NDC with same text size
-                        st.write(f"**Product:** {first_row['product_name']}")
-                        st.write(f"**Labeler:** {first_row['labeler_name']}")
-                        st.write(f"**National Drug Code:** {first_row['ndc']}")
+                        st.subheader(f"**Product:** {first_row['product_name']}")
+                        st.subheader(f"**Labeler:** {first_row['labeler_name']}")
+                        st.subheader(f"**National Drug Code:** {first_row['ndc']}")
                         
                         if first_row['spl_id']:
                             spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
@@ -1513,9 +1513,9 @@ def main():
                         st.success(f"✅ Found {len(results_df)} manufacturing establishments")
                         
                         # Product, Labeler, and NDC with same text size
-                        st.write(f"**Product:** {first_row['product_name']}")
-                        st.write(f"**Labeler:** {first_row['labeler_name']}")
-                        st.write(f"**National Drug Code:** {first_row['ndc']}")
+                        st.subheader(f"**Product:** {first_row['product_name']}")
+                        st.subheader(f"**Labeler:** {first_row['labeler_name']}")
+                        st.subheader(f"**National Drug Code:** {first_row['ndc']}")
                         
                         if first_row['spl_id']:
                             spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
@@ -1534,8 +1534,6 @@ def main():
                                 
                                 with col1:
                                     # Show establishment name in content, not header
-                                    if row['establishment_name'] and row['establishment_name'] != 'Unknown':
-                                        st.write(f"**🏢 Establishment Name:** {row['establishment_name']}")
                                     if row['fei_number']:
                                         st.write(f"**🔢 FDA Establishment Identifier:** {row['fei_number']}")
                                     if row['duns_number']:
