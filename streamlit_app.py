@@ -1481,12 +1481,8 @@ def main():
         ndc_input = "0185-0674-01"
         search_btn = True
     
-    # Information links
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("📖 [How to find your medication's National Drug Code](https://dailymed.nlm.nih.gov/dailymed/help.cfm)")
-    with col2:
-        st.markdown("📋 [About FDA drug databases](https://www.fda.gov/drugs/drug-approvals-and-databases)")
+    # Information link - removed "About FDA drug databases"
+    st.markdown("📖 [How to find your medication's National Drug Code](https://dailymed.nlm.nih.gov/dailymed/help.cfm)")
     
     # Search functionality
     if search_btn and ndc_input:
@@ -1501,17 +1497,14 @@ def main():
                         # FIXED: Show proper message for no manufacturing establishments
                         st.warning(f"⚠️ No manufacturing establishments were identified in the structured product label")
                         
-                        # Product and Labeler with same font size
-                        st.markdown(f"**Product:** {first_row['product_name']}")
-                        st.markdown(f"**Labeler:** {first_row['labeler_name']}")
+                        # Product, Labeler, and NDC with same text size
+                        st.write(f"**Product:** {first_row['product_name']}")
+                        st.write(f"**Labeler:** {first_row['labeler_name']}")
+                        st.write(f"**National Drug Code:** {first_row['ndc']}")
                         
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("National Drug Code", first_row['ndc'])
-                        with col2:
-                            if first_row['spl_id']:
-                                spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                                st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
+                        if first_row['spl_id']:
+                            spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
+                            st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
                         
                         st.info("💡 This product may not have detailed establishment information in its official documentation (~70% of products don't include manufacturing details), or the establishments may not be in our database.")
                     
@@ -1519,30 +1512,30 @@ def main():
                         # Full results with establishments
                         st.success(f"✅ Found {len(results_df)} manufacturing establishments")
                         
-                        # Product and Labeler with same font size
-                        st.markdown(f"**Product:** {first_row['product_name']}")
-                        st.markdown(f"**Labeler:** {first_row['labeler_name']}")
+                        # Product, Labeler, and NDC with same text size
+                        st.write(f"**Product:** {first_row['product_name']}")
+                        st.write(f"**Labeler:** {first_row['labeler_name']}")
+                        st.write(f"**National Drug Code:** {first_row['ndc']}")
                         
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("National Drug Code", first_row['ndc'])
-                        with col2:
-                            if first_row['spl_id']:
-                                spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
-                                st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
+                        if first_row['spl_id']:
+                            spl_url = f"https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid={first_row['spl_id']}"
+                            st.markdown(f"📄 **Structured Product Label:** [View on DailyMed]({spl_url})")
                         
-                        # Manufacturing establishments header with countries
+                        # Manufacturing establishments header with count first and countries
                         country_counts = results_df['country'].value_counts()
                         country_summary = ", ".join([f"{country}: {count}" for country, count in country_counts.items()])
-                        st.subheader(f"🏭 Manufacturing Establishments ({len(results_df)}) - {country_summary}")
+                        st.subheader(f"🏭 {len(results_df)} Manufacturing Establishments - {country_summary}")
                         
-                        # Manufacturing establishments - header without partial address
+                        # Manufacturing establishments - header without address
                         for idx, row in results_df.iterrows():
-                            # Use just establishment name in header
-                            with st.expander(f"Establishment {idx + 1}: {row['establishment_name']}", expanded=True):
+                            # Use just "Establishment X" in header, removing any address
+                            with st.expander(f"Establishment {idx + 1}", expanded=True):
                                 col1, col2 = st.columns(2)
                                 
                                 with col1:
+                                    # Show establishment name in content, not header
+                                    if row['establishment_name'] and row['establishment_name'] != 'Unknown':
+                                        st.write(f"**🏢 Establishment Name:** {row['establishment_name']}")
                                     if row['fei_number']:
                                         st.write(f"**🔢 FDA Establishment Identifier:** {row['fei_number']}")
                                     if row['duns_number']:
@@ -1640,4 +1633,8 @@ def main():
     - Information may not be complete or current
     - Not intended for medical decision-making
     - Does not replace consultation with healthcare providers
+    - Manufacturing locations may change over time
+    - Always consult your pharmacist or doctor for medication questions
+    
+    Data sources: FDA databases
 
